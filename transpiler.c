@@ -1,7 +1,9 @@
 #include <assert.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,12 +211,18 @@ bool tok_peek_kernel(struct tok *buf) {
     } else if (source[source_pos] == '\'') {
       char first_char = source[source_pos + 1];
       size_t length = first_char == '\\' ? 4 : 3;
-      if (source_pos + length >= source_size) {
+      if (first_char == '\'') {
+        struct pos pos;
+        to_pos(source_pos, &pos);
+        fprintf(stderr, "error at %s:%zu:%zu: empty character constant\n",
+                source_path, pos.line, pos.column);
+        exit(-1);
+      } else if (source_pos + length >= source_size) {
         struct pos pos;
         to_pos(source_size, &pos);
         fprintf(stderr,
                 "error at %s:%zu:%zu: unexpected EOF while parsing character "
-                "literal\n",
+                "constant\n",
                 source_path, pos.line, pos.column);
         exit(-1);
       } else if (first_char == '\\') {
@@ -226,6 +234,13 @@ bool tok_peek_kernel(struct tok *buf) {
                   source_path, pos.line, pos.column, escaped_char);
           exit(-1);
         }
+      } else if (first_char == '\"') {
+        struct pos pos;
+        to_pos(source_pos + 1, &pos);
+        fprintf(stderr,
+                "error at %s:%zu:%zu: unescaped character constant \'%c\'\n",
+                source_path, pos.line, pos.column, first_char);
+        exit(-1);
       }
       tok_fill(buf, TOK_CHAR_LITERAL, length);
       return true;
@@ -369,7 +384,7 @@ void tok_report_unexpected(struct tok *buf, const char *expected_token_string) {
   struct pos pos;
   to_pos(buf->tok_start - source, &pos);
   fprintf(stderr,
-          "error at %s:%zu:%zu: unexpected token (expected %s, got \"%*.s\")\n",
+          "error at %s:%zu:%zu: unexpected token (expected %s, got \"%.*s\")\n",
           source_path, pos.line, pos.column, expected_token_string,
           buf->tok_size, buf->tok_start);
   exit(-1);
@@ -401,10 +416,12 @@ struct ast_node {
     AST_NODE_PARAM,          // <no tag> type name
     AST_NODE_DECL,           // <no tag> type name assign-rhs
     AST_NODE_ASSIGNMENT,     // <no tag> assign-lhs assign-rhs
+    AST_NODE_SKIP,           // <skip>
+    AST_NODE_RETURN,         // <return> expr
     AST_NODE_RT_CALL,        // <free|exit|print|println> expr
-    AST_NODE_RT_READ,        // <no tag> assign-lhs
-    AST_NODE_IF,             // <no tag> expr scope scope
-    AST_NODE_WHILE,          // <no tag> expr scope
+    AST_NODE_RT_READ,        // <read> assign-lhs
+    AST_NODE_IF,             // <if> expr scope scope
+    AST_NODE_WHILE,          // <while> expr scope
     AST_NODE_SCOPE,          // <no tag> stmt*
     AST_NODE_ARRAY_ELEM,     // <no tag> ident expr* (subscripts)
     AST_NODE_PAIR_ELEM,      // <fst|snd> expr
@@ -448,6 +465,14 @@ struct ast_node *ast_next_child(struct ast_node *cur) {
   return ast_nodes + cur->next_child;
 }
 
+struct ast_node *ast_nth_child(struct ast_node *cur, int n) {
+  cur = ast_first_child(cur);
+  for (int i = 0; i < n; ++i) {
+    cur = ast_next_child(cur);
+  }
+  return cur;
+}
+
 void ast_add_first_child(struct ast_node *cur, struct ast_node *child) {
   cur->first_child = child - ast_nodes;
 }
@@ -465,13 +490,6 @@ void ast_add_child(struct ast_node *cur, struct ast_node *child,
     ast_add_next_child(*cur_child_r, child);
   }
   *cur_child_r = child;
-}
-
-void ast_add_child_nullable(struct ast_node *cur, struct ast_node *child,
-                            struct ast_node **cur_child_r) {
-  if (child != NULL) {
-    ast_add_child(cur, child, cur_child_r);
-  }
 }
 
 void ast_set_tag(struct ast_node *node, const char *tag, int tag_size) {
@@ -561,7 +579,7 @@ struct ast_node *parse_non_array_type() {
     break;
   case TOK_PAIR: {
     res = ast_alloc_node(AST_NODE_PAIR);
-    ast_set_cstr(res, "<pair>");
+    ast_set_cstr(res, "pair");
     struct ast_node *last_child = NULL;
 
     tok_expect_token(TOK_LPAREN, "\"(\"");
@@ -642,16 +660,45 @@ struct ast_node *parse_expr0() {
   struct ast_node *res;
   tok_peek_token_no_eof(&tok, "primary expression");
 
+  bool negate_integer_literal = false;
+
   switch (tok.tok_kind) {
   case TOK_BOOL_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_BOOL_LITERAL);
     ast_set_tag(res, tok.tok_start, tok.tok_size);
     break;
+  case TOK_DASH: {
+    tok_poll_token(&tok);
+    struct tok tok2;
+    tok_peek_token_no_eof(&tok2, "primary expression");
+    if (tok2.tok_kind != TOK_INT_LITERAL) {
+      res = ast_alloc_node(AST_NODE_UNARY);
+      res->token_id = tok.tok_kind;
+      ast_set_tag(res, tok.tok_start, tok.tok_size);
+      ast_add_first_child(res, parse_expr0());
+      break;
+    }
+    negate_integer_literal = true;
+  }
+  // fallthrough
   case TOK_INT_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_INT_LITERAL);
     ast_set_tag(res, tok.tok_start, tok.tok_size);
+    // should be safe, since after the token there could only be a null
+    // character or some non-numeric character
+    long value = strtol(tok.tok_start, NULL, 10);
+    if (value > ((long)INT_MAX + 1) ||
+        (value > INT_MAX && !negate_integer_literal)) {
+      struct pos pos;
+      to_pos(tok.tok_start - source, &pos);
+      fprintf(stderr,
+              "error at %s:%zu:%zu: integer constant \"%.*s\" outside of the "
+              "valid range\n",
+              source_path, pos.line, pos.column, tok.tok_size, tok.tok_start);
+      exit(-1);
+    }
     break;
   case TOK_CHAR_LITERAL:
     tok_poll_token(&tok);
@@ -678,7 +725,6 @@ struct ast_node *parse_expr0() {
     ast_set_tag(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_EXCLAMATION_MARK:
-  case TOK_DASH:
   case TOK_LEN:
   case TOK_ORD:
   case TOK_CHR:
@@ -686,8 +732,9 @@ struct ast_node *parse_expr0() {
                       // in tests
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_UNARY);
+    res->token_id = tok.tok_kind;
     ast_set_tag(res, tok.tok_start, tok.tok_size);
-    ast_add_first_child(res, parse_expr());
+    ast_add_first_child(res, parse_expr0());
     break;
   default:
     tok_report_unexpected(&tok, "primary expression");
@@ -709,6 +756,7 @@ struct ast_node *parse_expr0() {
         struct ast_node *rhs = _inner();                                       \
         struct ast_node *binop = ast_alloc_node(AST_NODE_BINARY);              \
         ast_set_tag(binop, tok.tok_start, tok.tok_size);                       \
+        binop->token_id = tok.tok_kind;                                        \
         ast_add_first_child(binop, lhs);                                       \
         ast_add_next_child(lhs, rhs);                                          \
         lhs = binop;                                                           \
@@ -748,6 +796,7 @@ struct ast_node *parse_array_literal() {
   struct tok tok;
   tok_peek_token_no_eof(&tok, "expression or \"]\"");
   if (tok.tok_kind == TOK_RBRACKET) {
+    tok_poll_token(&tok);
     return res;
   }
 
@@ -849,7 +898,7 @@ struct ast_node *parse_declaration_tail(struct ast_node *type,
                                         struct ast_node *ident) {
   tok_expect_token(TOK_ASSIGN, "\"=\"");
   struct ast_node *res = ast_alloc_node(AST_NODE_DECL);
-  ast_set_cstr(res, "declaration");
+  ast_set_tag(res, type->string_data, type->string_data_len);
   ast_add_first_child(res, type);
   ast_add_next_child(type, ident);
   ast_add_next_child(ident, parse_assign_rhs());
@@ -886,22 +935,26 @@ struct ast_node *parse_assignment() {
 struct ast_node *parse_scope();
 
 struct ast_node *parse_explicit_scope() {
-  tok_expect_token(TOK_BEGIN, "begin");
-  struct ast_node *res = parse_scope();
+  struct tok tok;
+  tok_extract_of_type(&tok, TOK_BEGIN, "begin");
+  struct ast_node *res = parse_scope(TOK_END, "\";\" or end");
+  ast_set_tag(res, tok.tok_start, tok.tok_size);
   tok_expect_token(TOK_END, "end");
   return res;
 }
 
 struct ast_node *parse_if() {
   struct ast_node *res = ast_alloc_node(AST_NODE_IF);
-  ast_set_cstr(res, "if");
 
-  tok_expect_token(TOK_IF, "if");
+  struct tok tok;
+  tok_extract_of_type(&tok, TOK_IF, "if");
+  ast_set_tag(res, tok.tok_start, tok.tok_size);
+
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_THEN, "then");
-  struct ast_node *theng = parse_scope();
+  struct ast_node *theng = parse_scope(TOK_ELSE, "\";\" or else");
   tok_expect_token(TOK_ELSE, "else");
-  struct ast_node *elseg = parse_scope();
+  struct ast_node *elseg = parse_scope(TOK_FI, "\";\" or fi");
   tok_expect_token(TOK_FI, "fi");
 
   ast_add_first_child(res, cond);
@@ -913,12 +966,14 @@ struct ast_node *parse_if() {
 
 struct ast_node *parse_while() {
   struct ast_node *res = ast_alloc_node(AST_NODE_WHILE);
-  ast_set_cstr(res, "while");
 
-  tok_expect_token(TOK_WHILE, "while");
+  struct tok tok;
+  tok_extract_of_type(&tok, TOK_WHILE, "while");
+  ast_set_tag(res, tok.tok_start, tok.tok_size);
+
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_DO, "do");
-  struct ast_node *stmt = parse_scope();
+  struct ast_node *stmt = parse_scope(TOK_DONE, "\";\" or done");
   tok_expect_token(TOK_DONE, "done");
 
   ast_add_first_child(res, cond);
@@ -934,15 +989,18 @@ struct ast_node *parse_statement_atom() {
   switch (tok.tok_kind) {
   case TOK_SKIP:
     tok_poll_token(&tok);
-    res = NULL;
+    res = ast_alloc_node(AST_NODE_SKIP);
+    ast_set_tag(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_FREE:
-  case TOK_RETURN:
   case TOK_EXIT:
   case TOK_PRINTLN:
   case TOK_PRINT:
+  case TOK_RETURN:
     tok_poll_token(&tok);
-    res = ast_alloc_node(AST_NODE_RT_CALL);
+    res = ast_alloc_node(tok.tok_kind == TOK_RETURN ? AST_NODE_RETURN
+                                                    : AST_NODE_RT_CALL);
+    res->token_id = tok.tok_kind;
     ast_set_tag(res, tok.tok_start, tok.tok_size);
     ast_add_first_child(res, parse_expr());
     break;
@@ -973,41 +1031,43 @@ struct ast_node *parse_statement_atom() {
   return res;
 }
 
-void parse_scope_in(struct ast_node *node, struct ast_node **last_child) {
-  ast_add_child_nullable(node, parse_statement_atom(), last_child);
+// Do not forget to prepend "\";\"" to the term_expected_string, otherwise user
+// will be confused
+void parse_scope_in(struct ast_node *node, struct ast_node **last_child,
+                    int term, const char *term_expected_string) {
+  ast_add_child(node, parse_statement_atom(), last_child);
+  ast_set_tag(node, (*last_child)->string_data, (*last_child)->string_data_len);
   while (true) {
     struct tok tok;
-    if (!tok_peek_token(&tok) || tok.tok_kind != TOK_SEMICOLON) {
+    if (!tok_peek_token(&tok) || (int)tok.tok_kind == term) {
       return;
     }
-    tok_poll_token(&tok);
-    ast_add_child_nullable(node, parse_statement_atom(), last_child);
+    tok_expect_token(TOK_SEMICOLON, term_expected_string);
+    ast_add_child(node, parse_statement_atom(), last_child);
   }
 }
 
-struct ast_node *parse_scope() {
+struct ast_node *parse_scope(int term, const char *term_expected_string) {
   struct ast_node *res = ast_alloc_node(AST_NODE_SCOPE);
-  ast_set_cstr(res, "scope");
   struct ast_node *last_child = NULL;
-  parse_scope_in(res, &last_child);
+  parse_scope_in(res, &last_child, term, term_expected_string);
   return res;
 }
 
 struct ast_node *parse_scope_tailing_decl(struct ast_node *type,
                                           struct ast_node *ident) {
   struct ast_node *res = ast_alloc_node(AST_NODE_SCOPE);
-  ast_set_cstr(res, "scope");
   struct ast_node *last_child = NULL;
 
   ast_add_child(res, parse_declaration_tail(type, ident), &last_child);
 
   struct tok tok;
-  if (!tok_peek_token(&tok) || tok.tok_kind != TOK_SEMICOLON) {
+  if (!tok_peek_token(&tok) || tok.tok_kind == TOK_END) {
     return res;
   }
-  tok_poll_token(&tok);
+  tok_expect_token(TOK_SEMICOLON, "\";\" or end");
 
-  parse_scope_in(res, &last_child);
+  parse_scope_in(res, &last_child, TOK_END, "\";\" or end");
   return res;
 }
 
@@ -1050,7 +1110,7 @@ struct ast_node *parse_function_tail(struct ast_node *type,
   ast_set_cstr(function, "function");
   struct ast_node *params = parse_parameter_list();
   tok_expect_token(TOK_IS, "is");
-  struct ast_node *stmt = parse_scope();
+  struct ast_node *stmt = parse_scope(TOK_END, "\";\" or end");
   tok_expect_token(TOK_END, "end");
 
   ast_add_first_child(function, type);
@@ -1080,9 +1140,20 @@ struct ast_node *parse_program() {
     ast_add_child(res, parse_function_tail(type, ident), &cur_child);
   }
 
-  struct ast_node *statement = parse_scope();
+  struct ast_node *statement = parse_scope(TOK_END, "\";\" or end");
   ast_add_child(res, statement, &cur_child);
   tok_expect_token(TOK_END, "end");
+
+  size_t end_pos = source_pos;
+  tok_skip_to_non_whitespace();
+  if (source_pos != source_size) {
+    struct pos pos;
+    to_pos(end_pos, &pos);
+    fprintf(stderr,
+            "error at %s:%zu:%zu: junk past the end of the main program\n",
+            source_path, pos.line, pos.column);
+    exit(-1);
+  }
 
   return res;
 }
@@ -1115,6 +1186,101 @@ void mmap_source() {
     perror("internal error: failed to map the source file");
     exit(-1);
   }
+}
+
+void report_at_ast_node(struct ast_node *node, const char *severity,
+                        const char *fmt, va_list args) {
+  struct pos pos;
+  to_pos(node->string_data - source, &pos);
+
+  char buf[4096];
+  vsnprintf(buf, 4096, fmt, args);
+
+  fprintf(stderr, "%s at %s:%zu:%zu: %s\n", severity, source_path, pos.line,
+          pos.column, buf);
+}
+
+void report_error_at_ast_node(struct ast_node *node, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  report_at_ast_node(node, "error", fmt, args);
+  va_end(args);
+  exit(-1);
+}
+
+void report_warning_at_ast_node(struct ast_node *node, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  report_at_ast_node(node, "warning", fmt, args);
+  va_end(args);
+}
+
+void no_returns_statement_pass(struct ast_node *stmt) {
+  switch (stmt->kind) {
+  case AST_NODE_RETURN:
+    report_error_at_ast_node(stmt, "attempt to return from the main program");
+    break;
+  case AST_NODE_IF: {
+    struct ast_node *theng = ast_next_child(ast_first_child(stmt));
+    struct ast_node *elseg = ast_next_child(theng);
+    no_returns_statement_pass(theng);
+    no_returns_statement_pass(elseg);
+  } break;
+  case AST_NODE_WHILE: {
+    struct ast_node *body = ast_next_child(ast_first_child(stmt));
+    no_returns_statement_pass(body);
+  } break;
+  case AST_NODE_SCOPE: {
+    struct ast_node *child = ast_first_child(stmt);
+    while (child != NULL) {
+      no_returns_statement_pass(child);
+      child = ast_next_child(child);
+    }
+  } break;
+  default:
+  }
+}
+
+void check_scope_returns(struct ast_node *scope) {
+  struct ast_node *last = ast_first_child(scope);
+  while (true) {
+    struct ast_node *next = ast_next_child(last);
+    if (next == NULL) {
+      break;
+    }
+    last = next;
+  }
+  switch (last->kind) {
+  case AST_NODE_RETURN:
+    return;
+  case AST_NODE_RT_CALL:
+    if (last->token_id != TOK_EXIT) {
+      report_error_at_ast_node(last, "return expected after this statement");
+    }
+    break;
+  case AST_NODE_IF: {
+    struct ast_node *theng = ast_nth_child(last, 1);
+    struct ast_node *elseg = ast_nth_child(last, 2);
+    check_scope_returns(theng);
+    check_scope_returns(elseg);
+  } break;
+  case AST_NODE_SCOPE: {
+    check_scope_returns(ast_first_child(last));
+  } break;
+  default:
+    report_error_at_ast_node(last, "return expected after this statement");
+  }
+}
+
+void check_returns_pass(struct ast_node *program) {
+  struct ast_node *child = ast_first_child(program);
+  while (child->kind == AST_NODE_FUNC) {
+    struct ast_node *scope = ast_nth_child(child, 3);
+    check_scope_returns(scope);
+
+    child = ast_next_child(child);
+  }
+  no_returns_statement_pass(child);
 }
 
 bool verify_extension(const char *path) {
@@ -1158,5 +1324,7 @@ int main(int argc, char const *argv[]) {
   mmap_ast_nodes();
 
   struct ast_node *ast = parse_program();
+  check_returns_pass(ast);
+
   ast_dump(ast, 0);
 }

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VALID=$(find tests/valid/ tests/invalid/semanticErr/ -type f -name '*.wacc')
+VALID=$(find tests/valid/ -type f -name '*.wacc')
 INVALID=$(find tests/invalid/syntaxErr/ -type f -name '*.wacc')
 
 FAILED=0
