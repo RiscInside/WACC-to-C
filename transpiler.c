@@ -16,6 +16,10 @@
 #define C_EXTENSION ".c"
 #define VALID_ESCAPES "0btnfr\"\'\\"
 
+#define EXIT_SEMANTIC_ERROR 200
+#define EXIT_SYNTAX_ERROR 100
+#define EXIT_MISC_ERROR -1
+
 const char *source_path;
 const char *source;
 size_t source_size;
@@ -25,7 +29,7 @@ void *alloc(size_t size) {
   void *res = malloc(size);
   if (res == NULL) {
     fprintf(stderr, "internal error: allocation failure\n");
-    exit(-1);
+    exit(EXIT_MISC_ERROR);
   }
   return res;
 }
@@ -189,7 +193,7 @@ bool tok_peek_kernel(struct tok *buf) {
           to_pos(cur, &pos);
           fprintf(stderr, "error at %s:%zu:%zu: invalid escape char \'%c\'\n",
                   source_path, pos.line, pos.column, source[cur]);
-          exit(-1);
+          exit(EXIT_SYNTAX_ERROR);
         } else if (escaped) {
           escaped = false;
         } else if (!escaped && source[cur] == '\\') {
@@ -206,7 +210,7 @@ bool tok_peek_kernel(struct tok *buf) {
           stderr,
           "error at %s:%zu:%zu: unexpected EOF while parsing string token\n",
           source_path, pos.line, pos.column);
-      exit(-1);
+      exit(EXIT_SYNTAX_ERROR);
 
     } else if (source[source_pos] == '\'') {
       char first_char = source[source_pos + 1];
@@ -216,7 +220,7 @@ bool tok_peek_kernel(struct tok *buf) {
         to_pos(source_pos, &pos);
         fprintf(stderr, "error at %s:%zu:%zu: empty character constant\n",
                 source_path, pos.line, pos.column);
-        exit(-1);
+        exit(EXIT_SYNTAX_ERROR);
       } else if (source_pos + length >= source_size) {
         struct pos pos;
         to_pos(source_size, &pos);
@@ -224,7 +228,7 @@ bool tok_peek_kernel(struct tok *buf) {
                 "error at %s:%zu:%zu: unexpected EOF while parsing character "
                 "constant\n",
                 source_path, pos.line, pos.column);
-        exit(-1);
+        exit(EXIT_SYNTAX_ERROR);
       } else if (first_char == '\\') {
         char escaped_char = source[source_pos + 2];
         if (strchr(VALID_ESCAPES, escaped_char) == 0) {
@@ -232,7 +236,7 @@ bool tok_peek_kernel(struct tok *buf) {
           to_pos(source_pos + 2, &pos);
           fprintf(stderr, "error at %s:%zu:%zu: invalid escape char \'%c\'\n",
                   source_path, pos.line, pos.column, escaped_char);
-          exit(-1);
+          exit(EXIT_SYNTAX_ERROR);
         }
       } else if (first_char == '\"') {
         struct pos pos;
@@ -240,7 +244,7 @@ bool tok_peek_kernel(struct tok *buf) {
         fprintf(stderr,
                 "error at %s:%zu:%zu: unescaped character constant \'%c\'\n",
                 source_path, pos.line, pos.column, first_char);
-        exit(-1);
+        exit(EXIT_SYNTAX_ERROR);
       }
       tok_fill(buf, TOK_CHAR_LITERAL, length);
       return true;
@@ -333,7 +337,7 @@ bool tok_peek_kernel(struct tok *buf) {
   to_pos(source_pos, &pos);
   fprintf(stderr, "error at %s:%zu:%zu: unrecognized token\n", source_path,
           pos.line, pos.column);
-  exit(-1);
+  exit(EXIT_SYNTAX_ERROR);
 }
 
 struct tok saved_token = {NULL, 0, 0};
@@ -371,7 +375,7 @@ void tok_peek_token_no_eof(struct tok *buf, const char *expected_token_string) {
     to_pos(source_size, &pos);
     fprintf(stderr, "error at %s:%zu:%zu: unexpected EOF (expected %s)\n",
             source_path, pos.line, pos.column, expected_token_string);
-    exit(-1);
+    exit(EXIT_SYNTAX_ERROR);
   }
 }
 
@@ -387,7 +391,7 @@ void tok_report_unexpected(struct tok *buf, const char *expected_token_string) {
           "error at %s:%zu:%zu: unexpected token (expected %s, got \"%.*s\")\n",
           source_path, pos.line, pos.column, expected_token_string,
           buf->tok_size, buf->tok_start);
-  exit(-1);
+  exit(EXIT_SYNTAX_ERROR);
 }
 
 void tok_extract_of_type(struct tok *tok, int kind,
@@ -452,14 +456,14 @@ struct ast_node {
 struct ast_node *ast_nodes;
 
 struct ast_node *ast_first_child(struct ast_node *cur) {
-  if (cur->first_child == -1) {
+  if (cur->first_child == EXIT_SYNTAX_ERROR) {
     return NULL;
   }
   return ast_nodes + cur->first_child;
 }
 
 struct ast_node *ast_next_child(struct ast_node *cur) {
-  if (cur->next_child == -1) {
+  if (cur->next_child == EXIT_SYNTAX_ERROR) {
     return NULL;
   }
   return ast_nodes + cur->next_child;
@@ -471,6 +475,18 @@ struct ast_node *ast_nth_child(struct ast_node *cur, int n) {
     cur = ast_next_child(cur);
   }
   return cur;
+}
+
+struct ast_node *ast_last_child(struct ast_node *cur) {
+  cur = ast_first_child(cur);
+  while (cur != NULL) {
+    struct ast_node *next = ast_next_child(cur);
+    if (next == NULL) {
+      return cur;
+    }
+    cur = next;
+  }
+  return NULL;
 }
 
 void ast_add_first_child(struct ast_node *cur, struct ast_node *child) {
@@ -506,12 +522,12 @@ struct ast_node *ast_alloc_node(int kind) {
   int idx = ast_last_allocated++;
   if (idx == AST_NODES_MAX) {
     fprintf(stderr, "internal error: failed to allocate ast node from pool\n");
-    exit(-1);
+    exit(EXIT_SYNTAX_ERROR);
   }
   struct ast_node *res = ast_nodes + idx;
   res->kind = kind;
-  res->first_child = -1;
-  res->next_child = -1;
+  res->first_child = EXIT_SYNTAX_ERROR;
+  res->next_child = EXIT_SYNTAX_ERROR;
   res->string_data = NULL;
   res->string_data_len = 0;
   return res;
@@ -668,18 +684,23 @@ struct ast_node *parse_expr0() {
     res = ast_alloc_node(AST_NODE_BOOL_LITERAL);
     ast_set_tag(res, tok.tok_start, tok.tok_size);
     break;
-  case TOK_DASH: {
+  case TOK_DASH:
+  case TOK_PLUS_SIGN: {
     tok_poll_token(&tok);
     struct tok tok2;
     tok_peek_token_no_eof(&tok2, "primary expression");
     if (tok2.tok_kind != TOK_INT_LITERAL) {
-      res = ast_alloc_node(AST_NODE_UNARY);
-      res->token_id = tok.tok_kind;
-      ast_set_tag(res, tok.tok_start, tok.tok_size);
-      ast_add_first_child(res, parse_expr0());
-      break;
+      if (tok.tok_kind == TOK_PLUS_SIGN) {
+        tok_report_unexpected(&tok2, "integer");
+      } else {
+        res = ast_alloc_node(AST_NODE_UNARY);
+        res->token_id = tok.tok_kind;
+        ast_set_tag(res, tok.tok_start, tok.tok_size);
+        ast_add_first_child(res, parse_expr0());
+        break;
+      }
     }
-    negate_integer_literal = true;
+    negate_integer_literal = tok.tok_kind == TOK_DASH;
   }
   // fallthrough
   case TOK_INT_LITERAL:
@@ -697,7 +718,7 @@ struct ast_node *parse_expr0() {
               "error at %s:%zu:%zu: integer constant \"%.*s\" outside of the "
               "valid range\n",
               source_path, pos.line, pos.column, tok.tok_size, tok.tok_start);
-      exit(-1);
+      exit(EXIT_SYNTAX_ERROR);
     }
     break;
   case TOK_CHAR_LITERAL:
@@ -728,8 +749,6 @@ struct ast_node *parse_expr0() {
   case TOK_LEN:
   case TOK_ORD:
   case TOK_CHR:
-  case TOK_PLUS_SIGN: // this one is not in the spec for some reason, but it is
-                      // in tests
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_UNARY);
     res->token_id = tok.tok_kind;
@@ -1152,7 +1171,7 @@ struct ast_node *parse_program() {
     fprintf(stderr,
             "error at %s:%zu:%zu: junk past the end of the main program\n",
             source_path, pos.line, pos.column);
-    exit(-1);
+    exit(EXIT_SYNTAX_ERROR);
   }
 
   return res;
@@ -1160,10 +1179,11 @@ struct ast_node *parse_program() {
 
 void mmap_ast_nodes() {
   ast_nodes = mmap(NULL, sizeof(struct ast_node) * AST_NODES_MAX,
-                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
+                   EXIT_SYNTAX_ERROR, 0);
   if (ast_nodes == MAP_FAILED) {
     perror("internal error: failed to map ast nodes pool");
-    exit(-1);
+    exit(EXIT_MISC_ERROR);
   }
 }
 
@@ -1171,20 +1191,20 @@ void mmap_source() {
   int fd = open(source_path, O_RDONLY);
   if (fd < 0) {
     perror("error: failed to open the source file");
-    exit(-1);
+    exit(EXIT_MISC_ERROR);
   }
 
   struct stat source_stat;
   if (fstat(fd, &source_stat) != 0) {
     perror("error: failed to get source file size");
-    exit(-1);
+    exit(EXIT_MISC_ERROR);
   }
   source_size = source_stat.st_size;
 
   source = mmap(NULL, source_size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (source == MAP_FAILED) {
     perror("internal error: failed to map the source file");
-    exit(-1);
+    exit(EXIT_MISC_ERROR);
   }
 }
 
@@ -1200,40 +1220,52 @@ void report_at_ast_node(struct ast_node *node, const char *severity,
           pos.column, buf);
 }
 
-void report_error_at_ast_node(struct ast_node *node, const char *fmt, ...) {
+void report_syntax_error_at_ast_node(struct ast_node *node, const char *fmt,
+                                     ...) {
   va_list args;
   va_start(args, fmt);
   report_at_ast_node(node, "error", fmt, args);
   va_end(args);
-  exit(-1);
+  exit(EXIT_SYNTAX_ERROR);
 }
 
-void report_warning_at_ast_node(struct ast_node *node, const char *fmt, ...) {
+static bool sema_checks_passed = true;
+
+void report_sema_error_at_ast_node(struct ast_node *node, const char *fmt,
+                                   ...) {
   va_list args;
+  sema_checks_passed = false;
   va_start(args, fmt);
-  report_at_ast_node(node, "warning", fmt, args);
+  report_at_ast_node(node, "error", fmt, args);
   va_end(args);
 }
 
-void no_returns_statement_pass(struct ast_node *stmt) {
+void sema_assert_passed_checks() {
+  if (!sema_checks_passed) {
+    exit(EXIT_SEMANTIC_ERROR);
+  }
+}
+
+void check_no_returns_pass(struct ast_node *stmt) {
   switch (stmt->kind) {
   case AST_NODE_RETURN:
-    report_error_at_ast_node(stmt, "attempt to return from the main program");
+    report_sema_error_at_ast_node(stmt,
+                                  "attempt to return from the main program");
     break;
   case AST_NODE_IF: {
     struct ast_node *theng = ast_next_child(ast_first_child(stmt));
     struct ast_node *elseg = ast_next_child(theng);
-    no_returns_statement_pass(theng);
-    no_returns_statement_pass(elseg);
+    check_no_returns_pass(theng);
+    check_no_returns_pass(elseg);
   } break;
   case AST_NODE_WHILE: {
     struct ast_node *body = ast_next_child(ast_first_child(stmt));
-    no_returns_statement_pass(body);
+    check_no_returns_pass(body);
   } break;
   case AST_NODE_SCOPE: {
     struct ast_node *child = ast_first_child(stmt);
     while (child != NULL) {
-      no_returns_statement_pass(child);
+      check_no_returns_pass(child);
       child = ast_next_child(child);
     }
   } break;
@@ -1242,20 +1274,14 @@ void no_returns_statement_pass(struct ast_node *stmt) {
 }
 
 void check_scope_returns(struct ast_node *scope) {
-  struct ast_node *last = ast_first_child(scope);
-  while (true) {
-    struct ast_node *next = ast_next_child(last);
-    if (next == NULL) {
-      break;
-    }
-    last = next;
-  }
+  struct ast_node *last = ast_last_child(scope);
   switch (last->kind) {
   case AST_NODE_RETURN:
     return;
   case AST_NODE_RT_CALL:
     if (last->token_id != TOK_EXIT) {
-      report_error_at_ast_node(last, "return expected after this statement");
+      report_syntax_error_at_ast_node(last,
+                                      "return expected after this statement");
     }
     break;
   case AST_NODE_IF: {
@@ -1268,7 +1294,8 @@ void check_scope_returns(struct ast_node *scope) {
     check_scope_returns(ast_first_child(last));
   } break;
   default:
-    report_error_at_ast_node(last, "return expected after this statement");
+    report_syntax_error_at_ast_node(last,
+                                    "return expected after this statement");
   }
 }
 
@@ -1277,10 +1304,9 @@ void check_returns_pass(struct ast_node *program) {
   while (child->kind == AST_NODE_FUNC) {
     struct ast_node *scope = ast_nth_child(child, 3);
     check_scope_returns(scope);
-
     child = ast_next_child(child);
   }
-  no_returns_statement_pass(child);
+  check_no_returns_pass(child);
 }
 
 bool verify_extension(const char *path) {
@@ -1305,13 +1331,13 @@ const char *replace_wacc_extension(const char *path) {
 int main(int argc, char const *argv[]) {
   if (argc != 2 && argc != 3) {
     fprintf(stderr, "usage: %s <source path> [<output path>]\n", argv[0]);
-    return -1;
+    return EXIT_SYNTAX_ERROR;
   }
 
   source_path = argv[1];
   if (!verify_extension(source_path)) {
     fprintf(stderr, "error: source path should end with .wacc\n");
-    return -1;
+    return EXIT_SYNTAX_ERROR;
   }
 
   const char *output_path = argv[2];
@@ -1326,5 +1352,6 @@ int main(int argc, char const *argv[]) {
   struct ast_node *ast = parse_program();
   check_returns_pass(ast);
 
+  sema_assert_passed_checks();
   ast_dump(ast, 0);
 }
