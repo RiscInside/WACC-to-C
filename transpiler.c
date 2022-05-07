@@ -2653,6 +2653,10 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
       fprintf(output_file, "(Char)");
       cgen_emit_assign_rhs(ast_first_child(rhs));
       break;
+    case TOK_DASH:
+      fprintf(output_file, "-");
+      cgen_emit_assign_rhs(ast_first_child(rhs));
+      break;
     }
     break;
   default:
