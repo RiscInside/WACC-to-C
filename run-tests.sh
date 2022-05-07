@@ -1,8 +1,8 @@
 #!/bin/bash
 
-VALID=$(find tests/valid/ regressions/valid/ -type f -name '*.wacc')
-INVALID_SYN=$(find tests/invalid/syntaxErr/ regressions/invalid/syntaxErr/ -type f -name '*.wacc')
-INVALID_SEM=$(find tests/invalid/semanticErr/ -type f -name '*.wacc')
+VALID=$(find tests/valid/ regressions/valid/ extensions-tests/valid -type f -name '*.wacc')
+INVALID_SYN=$(find tests/invalid/syntaxErr/ regressions/invalid/syntaxErr/ extensions-tests/invalid/syntaxErr/ -type f -name '*.wacc')
+INVALID_SEM=$(find tests/invalid/semanticErr/ extensions-tests/invalid/semanticErr/ -type f -name '*.wacc')
 
 FAILED=0
 PASSED=0

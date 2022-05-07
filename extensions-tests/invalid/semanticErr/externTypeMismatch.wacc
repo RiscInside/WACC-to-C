@@ -1,0 +1,8 @@
+# Using getchar to read a character
+# What could go wrong
+
+begin
+    extern int getchar()
+
+    char c = call getchar()
+end

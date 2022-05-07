@@ -1,0 +1,9 @@
+# If there are no arguments, there is 
+# no need for the parameter list, right?
+# Right?
+
+begin
+    extern int getchar
+
+    int c = call getchar()
+end

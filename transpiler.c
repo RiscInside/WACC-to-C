@@ -134,6 +134,7 @@ struct tok {
     TOK_CHAR_LITERAL,
     TOK_STRING_LITERAL,
     TOK_NULL,
+    TOK_EXTERN
   } tok_kind;
 };
 
@@ -333,6 +334,7 @@ bool tok_peek_kernel(struct tok *buf) {
         TOK_HANDLE_KEYWORD(TOK_END, "end")
         TOK_HANDLE_KEYWORD(TOK_EXIT, "exit")
         TOK_HANDLE_KEYWORD(TOK_ELSE, "else")
+        TOK_HANDLE_KEYWORD(TOK_EXTERN, "extern")
         break;
       case 'f':
         TOK_HANDLE_KEYWORD(TOK_BOOL_LITERAL, "false")
@@ -471,6 +473,7 @@ struct ast_node {
   enum {
     AST_NODE_PROGRAM,        // <no tag> function* statement
     AST_NODE_FUNC,           // <no tag> type name param_list scope
+    AST_NODE_EXTERN,         // <no tag> type name param_list
     AST_NODE_IDENT,          // <id string> [no children]
     AST_NODE_PARAM_LIST,     // <no tag> param*
     AST_NODE_PARAM,          // <no tag> type name
@@ -692,6 +695,15 @@ bool parse_on_type() {
   return tok.tok_kind == TOK_STRING || tok.tok_kind == TOK_CHAR ||
          tok.tok_kind == TOK_INT || tok.tok_kind == TOK_BOOL ||
          tok.tok_kind == TOK_PAIR;
+}
+
+bool parse_on_extern() {
+  struct tok tok;
+  if (!tok_peek_token(&tok)) {
+    return false;
+  }
+
+  return tok.tok_kind == TOK_EXTERN;
 }
 
 struct ast_node *parse_expr();
@@ -1186,6 +1198,25 @@ struct ast_node *parse_parameter_list() {
   return result;
 }
 
+struct ast_node *parse_extern() {
+  struct ast_node *result = ast_alloc_node(AST_NODE_EXTERN);
+
+  struct tok tok;
+  tok_extract_of_type(&tok, TOK_EXTERN, "extern");
+
+  struct ast_node *return_type = parse_type();
+  struct ast_node *ident = parse_ident();
+  struct ast_node *params = parse_parameter_list();
+
+  ast_set_tag(result, tok.tok_start,
+              params->string_data + params->string_data_len - tok.tok_start);
+  ast_add_first_child(result, return_type);
+  ast_add_next_child(return_type, ident);
+  ast_add_next_child(ident, params);
+
+  return result;
+}
+
 struct ast_node *parse_function_tail(struct ast_node *type,
                                      struct ast_node *ident) {
   struct ast_node *function = ast_alloc_node(AST_NODE_FUNC);
@@ -1209,7 +1240,11 @@ struct ast_node *parse_program() {
   struct ast_node *res = ast_alloc_node(AST_NODE_PROGRAM);
   struct ast_node *cur_child = NULL;
 
-  while (parse_on_type()) {
+  while (parse_on_type() || parse_on_extern()) {
+    if (parse_on_extern()) {
+      ast_add_child(res, parse_extern(), &cur_child);
+      continue;
+    }
     struct ast_node *type = parse_type();
     struct ast_node *ident = parse_ident();
 
@@ -1346,7 +1381,11 @@ void check_scope_returns(struct ast_node *scope) {
 
 void check_returns_pass(struct ast_node *program) {
   struct ast_node *child = ast_first_child(program);
-  while (child->kind == AST_NODE_FUNC) {
+  while (child->kind == AST_NODE_FUNC || child->kind == AST_NODE_EXTERN) {
+    if (child->kind == AST_NODE_EXTERN) {
+      child = ast_next_child(child);
+      continue;
+    }
     struct ast_node *scope = ast_nth_child(child, 3);
     check_scope_returns(scope);
     child = ast_next_child(child);
@@ -1753,7 +1792,7 @@ void function_from_ast_node(struct ast_node *node) {
 
 void functions_pass(struct ast_node *program) {
   struct ast_node *function = ast_first_child(program);
-  while (function->kind == AST_NODE_FUNC) {
+  while (function->kind == AST_NODE_FUNC || function->kind == AST_NODE_EXTERN) {
     function_from_ast_node(function);
     function = ast_next_child(function);
   }
@@ -2229,8 +2268,10 @@ void sema_visit_function(struct ast_node *node) {
 
 void sema_main_pass(struct ast_node *program) {
   struct ast_node *child = ast_first_child(program);
-  while (child->kind == AST_NODE_FUNC) {
-    sema_visit_function(child);
+  while (child->kind == AST_NODE_FUNC || child->kind == AST_NODE_EXTERN) {
+    if (child->kind == AST_NODE_FUNC) {
+      sema_visit_function(child);
+    }
     child = ast_next_child(child);
   }
   sema_visit_scope(NULL, 0, child, TINDEX_INVALID);
@@ -2366,20 +2407,33 @@ void cgen_emit_typedef(struct type *type) {
   }
 }
 
-void cgen_emit_func_decl(struct function *function) {
-  fprintf(output_file, "%s $%.*s(", cgen_get_type_name(function->return_type),
-          (int)function->name.len, function->name.name);
+void cgen_emit_func_decl_impl(struct function *function, bool mangle) {
+  fprintf(output_file, mangle ? "%s $%.*s(" : "%s %.*s(",
+          cgen_get_type_name(function->return_type), (int)function->name.len,
+          function->name.name);
   if (function->arguments_count == 0) {
-    fprintf(output_file, ");\n");
+    fprintf(output_file, ")");
     return;
   }
   for (uint32_t i = 0; i < function->arguments_count - 1; ++i) {
     fprintf(output_file, "%s, ",
             cgen_get_type_name(function->argument_types[i]));
   }
-  fprintf(output_file, "%s);\n",
+  fprintf(output_file, "%s)",
           cgen_get_type_name(
               function->argument_types[function->arguments_count - 1]));
+}
+
+void cgen_emit_func_decl(struct function *function) {
+  if (function->node->kind == AST_NODE_EXTERN) {
+    cgen_emit_func_decl_impl(function, false);
+    fprintf(output_file, ";\n");
+    fprintf(output_file, "__auto_type $%.*s = %.*s;\n", (int)function->name.len,
+            function->name.name, (int)function->name.len, function->name.name);
+  } else {
+    cgen_emit_func_decl_impl(function, true);
+    fprintf(output_file, ";\n");
+  }
 }
 
 void cgen_emit_func_decls() {
@@ -2419,7 +2473,11 @@ void cgen_emit_newpair(struct ast_node *rhs) {
 }
 
 void cgen_emit_call(struct ast_node *node) {
-  fprintf(output_file, "$%.*s(", node->string_data_len, node->string_data);
+  struct function *function =
+      function_lookup(node->string_data, node->string_data_len);
+  bool external = function->node->kind == AST_NODE_EXTERN;
+  fprintf(output_file, external ? "%.*s(" : "$%.*s(", node->string_data_len,
+          node->string_data);
   struct ast_node *arg = ast_first_child(node);
   while (arg != NULL) {
     struct ast_node *next_arg = ast_next_child(arg);
@@ -2449,7 +2507,7 @@ void cgen_emit_ident(struct ast_node *rhs) {
   int len = rhs->string_data_len;
 #define CGEN_HANDLE_C_KEYWORD(_k)                                              \
   if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                        \
-    str = "$$"_k;                                                              \
+    str = "$"_k;                                                               \
     len = strlen(_k) + 1;                                                      \
     goto emit;                                                                 \
   }
@@ -2787,7 +2845,11 @@ void cgen_pass(struct ast_node *program) {
   cgen_emit_sep();
 
   struct ast_node *node = ast_first_child(program);
-  while (node->kind == AST_NODE_FUNC) {
+  while (node->kind == AST_NODE_FUNC || node->kind == AST_NODE_EXTERN) {
+    if (node->kind == AST_NODE_EXTERN) {
+      node = ast_next_child(node);
+      continue;
+    }
     cgen_emit_func_def(node);
     cgen_emit_sep();
     node = ast_next_child(node);

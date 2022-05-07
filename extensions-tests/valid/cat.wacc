@@ -1,0 +1,13 @@
+# Using extern to implement cat
+
+begin
+    extern int getchar()
+    extern int putchar(int c)
+
+    int EOF = -1;
+    int c = call getchar();
+    while c != EOF do
+        int _ = call putchar(c);
+        c = call getchar()
+    done
+end
