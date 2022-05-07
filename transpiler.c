@@ -2333,7 +2333,7 @@ void cgen_emit_typedef(struct type *type) {
 }
 
 void cgen_emit_func_decl(struct function *function) {
-  fprintf(output_file, "%s %.*s(", cgen_get_type_name(function->return_type),
+  fprintf(output_file, "%s $%.*s(", cgen_get_type_name(function->return_type),
           (int)function->name.len, function->name.name);
   if (function->arguments_count == 0) {
     fprintf(output_file, ");\n");
@@ -2385,7 +2385,7 @@ void cgen_emit_newpair(struct ast_node *rhs) {
 }
 
 void cgen_emit_call(struct ast_node *node) {
-  fprintf(output_file, "%.*s(", node->string_data_len, node->string_data);
+  fprintf(output_file, "$%.*s(", node->string_data_len, node->string_data);
   struct ast_node *arg = ast_first_child(node);
   while (arg != NULL) {
     struct ast_node *next_arg = ast_next_child(arg);
@@ -2415,7 +2415,7 @@ void cgen_emit_ident(struct ast_node *rhs) {
   int len = rhs->string_data_len;
 #define CGEN_HANDLE_C_KEYWORD(_k)                                              \
   else if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                   \
-    str = "$"_k;                                                               \
+    str = "$$"_k;                                                              \
     len = strlen(_k) + 1;                                                      \
   }
   if (false) {
@@ -2640,7 +2640,7 @@ void cgen_emit_func_def(struct ast_node *function) {
   struct ast_node *param_list = ast_next_child(ident);
   struct ast_node *scope = ast_next_child(param_list);
 
-  fprintf(output_file, "%s %.*s(", return_type, ident->string_data_len,
+  fprintf(output_file, "%s $%.*s(", return_type, ident->string_data_len,
           ident->string_data);
 
   struct ast_node *param = ast_first_child(param_list);

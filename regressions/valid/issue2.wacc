@@ -1,0 +1,94 @@
+# 0 "wacc.wacc.in"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "wacc.wacc.in"
+begin
+
+# 1 "lexer.wacc.in" 1
+
+
+
+# 1 "gen/lexer.wacc.in" 1
+# 18 "gen/lexer.wacc.in"
+pair(int, pair) lexer_new(
+    char[] source,
+    int start,
+    int current
+) is
+    int l__ctor = current;
+    char[] lr__ctor = source;
+    int rr__ctor = start;
+    pair(char[], int) r__ctor = newpair(lr__ctor, rr__ctor);
+    pair(int, pair) __ctor = newpair(l__ctor, r__ctor);
+    return __ctor
+end
+# 5 "lexer.wacc.in" 2
+# 1 "gen/token.wacc.in" 1
+# 18 "gen/token.wacc.in"
+pair(int, pair) token_new(
+    int type,
+    int start,
+    int length
+) is
+    int l__ctor = length;
+    int lr__ctor = type;
+    int rr__ctor = start;
+    pair(int, int) r__ctor = newpair(lr__ctor, rr__ctor);
+    pair(int, pair) __ctor = newpair(l__ctor, r__ctor);
+    return __ctor
+end
+# 6 "lexer.wacc.in" 2
+# 1 "utils.wacc.in" 1
+# 7 "lexer.wacc.in" 2
+
+char advance(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+    char ret = source[current];
+    fst __self = current + 1; current = current + 1;
+    return ret
+end
+
+char peek(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+    return source[current]
+end
+
+bool skipComment(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+    while true do
+        char c = call peek(self);
+        bool isAtEnd = call isAtEnd(self);
+        if c == '\n' || isAtEnd then
+            return false
+        else bool __nop = false fi
+    done ;
+    return false
+end
+
+bool isAtEnd(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+    return current >= len source
+end
+
+bool skipWhitespace(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+    while true do
+        char c = call peek(self);
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' then
+            char _nop = call advance(self)
+        else if c == '#' then
+            bool __nop = call skipComment(self)
+        else
+            return false
+        fi fi
+    done;
+
+    return false
+end
+
+pair(int, pair) next_token(pair(int, pair) self) is pair(int, pair) __self = self; int current = fst __self; pair(char[], int) __sndself = snd __self; char[] source = fst __sndself; int start = snd __sndself;
+
+    snd __sndself = current; start = current;
+
+    exit 1
+end
+# 4 "wacc.wacc.in" 2
+
+println "Hello, World!"
+
+end
