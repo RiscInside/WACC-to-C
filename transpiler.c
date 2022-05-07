@@ -2491,9 +2491,9 @@ void cgen_emit_read(int ident_level, struct ast_node *node) {
   frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
   struct ast_node *loc = ast_first_child(node);
   if (loc->tindex == TINDEX_INT) {
-    fprintf(output_file, "scanf(\"%%d\", &(");
+    fprintf(output_file, "scanf(\" %%d\", &(");
   } else {
-    fprintf(output_file, "scanf(\"%%c\", &(");
+    fprintf(output_file, "scanf(\" %%c\", &(");
   }
   cgen_emit_assign_rhs(loc);
   fprintf(output_file, "));\n");
