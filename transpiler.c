@@ -2308,7 +2308,7 @@ FILE *output_file;
   "void *malloc(long unsigned int size);\n"                                    \
   "void free(void *ptr);\n"                                                    \
   "\n"                                                                         \
-  "void $printCharArray(String *arr, Bool newline) { int len = "               \
+  "void $printCharArray(String arr, Bool newline) { int len = "                \
   "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len, arr); } "  \
   "\n"
 
