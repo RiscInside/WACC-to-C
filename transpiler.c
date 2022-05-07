@@ -302,8 +302,8 @@ bool tok_peek_kernel(struct tok *buf) {
       return true;
     } else if (isalpha(source[source_pos]) || source[source_pos] == '_') {
 #define TOK_HANDLE_KEYWORD(_type, _keyword)                                    \
-  else if (strlen(_keyword) == cur - source_pos &&                             \
-           memcmp(source + source_pos, _keyword, cur - source_pos) == 0) {     \
+  if (strlen(_keyword) == cur - source_pos &&                                  \
+      memcmp(source + source_pos, _keyword, cur - source_pos) == 0) {          \
     tok_fill(buf, _type, cur - source_pos);                                    \
     return true;                                                               \
   }
@@ -315,40 +315,70 @@ bool tok_peek_kernel(struct tok *buf) {
         cur++;
       }
 
-      if (false) {
+      switch (source[source_pos]) {
+      case 'b':
+        TOK_HANDLE_KEYWORD(TOK_BEGIN, "begin")
+        TOK_HANDLE_KEYWORD(TOK_BOOL, "bool")
+        break;
+      case 'c':
+        TOK_HANDLE_KEYWORD(TOK_CALL, "call")
+        TOK_HANDLE_KEYWORD(TOK_CHAR, "char")
+        TOK_HANDLE_KEYWORD(TOK_CHR, "chr")
+        break;
+      case 'd':
+        TOK_HANDLE_KEYWORD(TOK_DONE, "done")
+        TOK_HANDLE_KEYWORD(TOK_DO, "do")
+        break;
+      case 'e':
+        TOK_HANDLE_KEYWORD(TOK_END, "end")
+        TOK_HANDLE_KEYWORD(TOK_EXIT, "exit")
+        TOK_HANDLE_KEYWORD(TOK_ELSE, "else")
+        break;
+      case 'f':
+        TOK_HANDLE_KEYWORD(TOK_BOOL_LITERAL, "false")
+        TOK_HANDLE_KEYWORD(TOK_FI, "fi")
+        TOK_HANDLE_KEYWORD(TOK_FREE, "free")
+        TOK_HANDLE_KEYWORD(TOK_FST, "fst")
+        break;
+      case 'i':
+        TOK_HANDLE_KEYWORD(TOK_IS, "is")
+        TOK_HANDLE_KEYWORD(TOK_IF, "if")
+        TOK_HANDLE_KEYWORD(TOK_INT, "int")
+        break;
+      case 'l':
+        TOK_HANDLE_KEYWORD(TOK_LEN, "len")
+        break;
+      case 'n':
+        TOK_HANDLE_KEYWORD(TOK_NEWPAIR, "newpair")
+        TOK_HANDLE_KEYWORD(TOK_NULL, "null")
+        break;
+      case 'o':
+        TOK_HANDLE_KEYWORD(TOK_ORD, "ord")
+        break;
+      case 'p':
+        TOK_HANDLE_KEYWORD(TOK_PAIR, "pair")
+        TOK_HANDLE_KEYWORD(TOK_PRINTLN, "println")
+        TOK_HANDLE_KEYWORD(TOK_PRINT, "print")
+        break;
+      case 'r':
+        TOK_HANDLE_KEYWORD(TOK_READ, "read")
+        TOK_HANDLE_KEYWORD(TOK_RETURN, "return")
+        break;
+      case 's':
+        TOK_HANDLE_KEYWORD(TOK_SKIP, "skip")
+        TOK_HANDLE_KEYWORD(TOK_SND, "snd")
+        TOK_HANDLE_KEYWORD(TOK_STRING, "string")
+        break;
+      case 't':
+        TOK_HANDLE_KEYWORD(TOK_THEN, "then")
+        TOK_HANDLE_KEYWORD(TOK_BOOL_LITERAL, "true")
+        break;
+      case 'w':
+        TOK_HANDLE_KEYWORD(TOK_WHILE, "while")
+        break;
+      default:
+        break;
       }
-      TOK_HANDLE_KEYWORD(TOK_BEGIN, "begin")
-      TOK_HANDLE_KEYWORD(TOK_END, "end")
-      TOK_HANDLE_KEYWORD(TOK_IS, "is")
-      TOK_HANDLE_KEYWORD(TOK_SKIP, "skip")
-      TOK_HANDLE_KEYWORD(TOK_PRINTLN, "println")
-      TOK_HANDLE_KEYWORD(TOK_PRINT, "print")
-      TOK_HANDLE_KEYWORD(TOK_READ, "read")
-      TOK_HANDLE_KEYWORD(TOK_FREE, "free")
-      TOK_HANDLE_KEYWORD(TOK_RETURN, "return")
-      TOK_HANDLE_KEYWORD(TOK_EXIT, "exit")
-      TOK_HANDLE_KEYWORD(TOK_IF, "if")
-      TOK_HANDLE_KEYWORD(TOK_THEN, "then")
-      TOK_HANDLE_KEYWORD(TOK_ELSE, "else")
-      TOK_HANDLE_KEYWORD(TOK_FI, "fi")
-      TOK_HANDLE_KEYWORD(TOK_WHILE, "while")
-      TOK_HANDLE_KEYWORD(TOK_DONE, "done")
-      TOK_HANDLE_KEYWORD(TOK_DO, "do")
-      TOK_HANDLE_KEYWORD(TOK_NEWPAIR, "newpair")
-      TOK_HANDLE_KEYWORD(TOK_CALL, "call")
-      TOK_HANDLE_KEYWORD(TOK_FST, "fst")
-      TOK_HANDLE_KEYWORD(TOK_SND, "snd")
-      TOK_HANDLE_KEYWORD(TOK_INT, "int")
-      TOK_HANDLE_KEYWORD(TOK_BOOL, "bool")
-      TOK_HANDLE_KEYWORD(TOK_CHAR, "char")
-      TOK_HANDLE_KEYWORD(TOK_STRING, "string")
-      TOK_HANDLE_KEYWORD(TOK_PAIR, "pair")
-      TOK_HANDLE_KEYWORD(TOK_LEN, "len")
-      TOK_HANDLE_KEYWORD(TOK_ORD, "ord")
-      TOK_HANDLE_KEYWORD(TOK_CHR, "chr")
-      TOK_HANDLE_KEYWORD(TOK_NULL, "null")
-      TOK_HANDLE_KEYWORD(TOK_BOOL_LITERAL, "true")
-      TOK_HANDLE_KEYWORD(TOK_BOOL_LITERAL, "false")
 
       tok_fill(buf, TOK_IDENT, cur - source_pos);
       return true;
@@ -1082,8 +1112,8 @@ struct ast_node *parse_statement_atom() {
   return res;
 }
 
-// Do not forget to prepend "\';\'" to the term_expected_string, otherwise user
-// will be confused
+// Do not forget to prepend "\';\'" to the term_expected_string, otherwise
+// user will be confused
 void parse_scope_in(struct ast_node *node, struct ast_node **last_child,
                     int term, const char *term_expected_string) {
   ast_add_child(node, parse_statement_atom(), last_child);
@@ -1715,9 +1745,8 @@ void function_from_ast_node(struct ast_node *node) {
   }
 
   if (tsearch(func, &functions_tree, function_names_compare) == NULL) {
-    fprintf(
-        stderr,
-        "internal error: failed to add a new function to the lookup tree\n");
+    fprintf(stderr, "internal error: failed to add a new function to the "
+                    "lookup tree\n");
     exit(EXIT_MISC_ERROR);
   }
 }
@@ -2217,24 +2246,28 @@ FILE *output_file;
 
 #define CGEN_IDENT_SEQ "\t"
 #define CGEN_PRELUDE                                                           \
-  "#include <stdbool.h>\n"                                                     \
-  "#include <stddef.h>\n"                                                      \
-  "#include <stdlib.h>\n"                                                      \
-  "#include <string.h>\n"                                                      \
-  "\n"                                                                         \
   "typedef int Int;\n"                                                         \
   "typedef char Char;\n"                                                       \
-  "typedef bool Bool;\n"                                                       \
+  "typedef _Bool Bool;\n"                                                      \
   "typedef const char *String;\n"                                              \
   "typedef void *PairPtr;\n"                                                   \
+  "static const _Bool true = 1;\n"                                             \
+  "static const _Bool false = 0;\n"                                            \
+  "static void *const null = (void *)0;\n"                                     \
   "\n"                                                                         \
-  "int $arrayLength(const void *s) { size_t *ss = (size_t *)s; return "        \
+  "int $arrayLength(const void *s) { long unsigned int *ss = (long unsigned "  \
+  "int *)s; return "                                                           \
   "(Int)*(ss "                                                                 \
-  "- 1); }\n"                                                                  \
-  "int printf(const char *restrict format, ...);\n"                            \
-  "int scanf(const char *restrict format, ...);\n"                             \
+  "- 1); }\n\n"                                                                \
+  "Int printf(const char *restrict format, ...);\n"                            \
+  "Int scanf(const char *restrict format, ...);\n"                             \
+  "void *memcpy(void *restrict dest, const void *restrict src, long unsigned " \
+  "int n);\n"                                                                  \
+  "__attribute__((noreturn)) void exit(int status);\n"                         \
+  "void *malloc(long unsigned int size);\n"                                    \
+  "void free(void *ptr);\n"                                                    \
   "\n"                                                                         \
-  "void $printCharArray(const char *arr, bool newline) { int len = "           \
+  "void $printCharArray(String *arr, Bool newline) { int len = "               \
   "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len, arr); } "  \
   "\n"
 
@@ -2285,21 +2318,22 @@ void cgen_emit_typedef(struct type *type) {
 
     cgen_emit_line(0, "%s %s(%s *elems, int count) {", array_name, alloc_name,
                    elem_name);
-    cgen_emit_line(
-        1,
-        "size_t memory_needed = (size_t)count * sizeof(%s) + sizeof(size_t);",
-        elem_name);
-    cgen_emit_line(1, "size_t *res = malloc(memory_needed);");
-    cgen_emit_line(1, "if (res == NULL) return NULL;");
-    cgen_emit_line(1, "*res = (size_t)count;");
-    cgen_emit_line(1, "memcpy(res + 1, elems, (size_t)count * sizeof(%s));",
+    cgen_emit_line(1,
+                   "unsigned long int memory_needed = (unsigned long int)count "
+                   "* sizeof(%s) + sizeof(unsigned long int);",
                    elem_name);
+    cgen_emit_line(1, "unsigned long int *res = malloc(memory_needed);");
+    cgen_emit_line(1, "if (res == null) return null;");
+    cgen_emit_line(1, "*res = (unsigned long int)count;");
+    cgen_emit_line(
+        1, "memcpy(res + 1, elems, (unsigned long int)count * sizeof(%s));",
+        elem_name);
     cgen_emit_line(1, "return (%s)(res + 1);", array_name);
     cgen_emit_line(0, "}");
     cgen_emit_sep();
 
     cgen_emit_line(0, "void %s(%s ptr) {", free_name, array_name);
-    cgen_emit_line(1, "free((size_t *)ptr - 1);");
+    cgen_emit_line(1, "free((unsigned int *)ptr - 1);");
     cgen_emit_line(0, "}");
   } break;
   case TYPE_PAIR: {
@@ -2414,14 +2448,95 @@ void cgen_emit_ident(struct ast_node *rhs) {
   const char *str = rhs->string_data;
   int len = rhs->string_data_len;
 #define CGEN_HANDLE_C_KEYWORD(_k)                                              \
-  else if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                   \
+  if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                        \
     str = "$$"_k;                                                              \
     len = strlen(_k) + 1;                                                      \
+    goto emit;                                                                 \
   }
-  if (false) {
+  switch (str[0]) {
+  case 'a':
+    CGEN_HANDLE_C_KEYWORD("auto")
+    break;
+  case 'b':
+    CGEN_HANDLE_C_KEYWORD("break")
+    break;
+  case 'c':
+    CGEN_HANDLE_C_KEYWORD("case")
+    CGEN_HANDLE_C_KEYWORD("const")
+    CGEN_HANDLE_C_KEYWORD("continue")
+    break;
+  case 'd':
+    CGEN_HANDLE_C_KEYWORD("default")
+    CGEN_HANDLE_C_KEYWORD("double")
+    break;
+  case 'e':
+    CGEN_HANDLE_C_KEYWORD("enum")
+    CGEN_HANDLE_C_KEYWORD("exit")
+    CGEN_HANDLE_C_KEYWORD("extern")
+    break;
+  case 'f':
+    CGEN_HANDLE_C_KEYWORD("float")
+    CGEN_HANDLE_C_KEYWORD("for")
+    CGEN_HANDLE_C_KEYWORD("free")
+    break;
+  case 'g':
+    CGEN_HANDLE_C_KEYWORD("goto")
+    break;
+  case 'i':
+    CGEN_HANDLE_C_KEYWORD("inline")
+    break;
+  case 'l':
+    CGEN_HANDLE_C_KEYWORD("long")
+    break;
+  case 'm':
+    CGEN_HANDLE_C_KEYWORD("malloc")
+    CGEN_HANDLE_C_KEYWORD("memcpy")
+    break;
+  case 'p':
+    CGEN_HANDLE_C_KEYWORD("printf")
+    break;
+  case 'r':
+    CGEN_HANDLE_C_KEYWORD("register")
+    CGEN_HANDLE_C_KEYWORD("restrict")
+    break;
+  case 's':
+    CGEN_HANDLE_C_KEYWORD("scanf")
+    CGEN_HANDLE_C_KEYWORD("short")
+    CGEN_HANDLE_C_KEYWORD("signed")
+    CGEN_HANDLE_C_KEYWORD("sizeof")
+    CGEN_HANDLE_C_KEYWORD("static")
+    CGEN_HANDLE_C_KEYWORD("struct")
+    CGEN_HANDLE_C_KEYWORD("switch")
+    break;
+  case 't':
+    CGEN_HANDLE_C_KEYWORD("typedef")
+    break;
+  case 'u':
+    CGEN_HANDLE_C_KEYWORD("union")
+    CGEN_HANDLE_C_KEYWORD("unsigned")
+    break;
+  case 'v':
+    CGEN_HANDLE_C_KEYWORD("void")
+    CGEN_HANDLE_C_KEYWORD("volatile")
+    break;
+  case '_':
+    CGEN_HANDLE_C_KEYWORD("_Alignas")
+    CGEN_HANDLE_C_KEYWORD("_Alignof")
+    CGEN_HANDLE_C_KEYWORD("_Atomic")
+    CGEN_HANDLE_C_KEYWORD("_Bool")
+    CGEN_HANDLE_C_KEYWORD("_Complex")
+    CGEN_HANDLE_C_KEYWORD("_Decimal128")
+    CGEN_HANDLE_C_KEYWORD("_Decimal32")
+    CGEN_HANDLE_C_KEYWORD("_Decimal64")
+    CGEN_HANDLE_C_KEYWORD("_Generic")
+    CGEN_HANDLE_C_KEYWORD("_Imaginary")
+    CGEN_HANDLE_C_KEYWORD("_Noreturn")
+    CGEN_HANDLE_C_KEYWORD("_Static_assert")
+    CGEN_HANDLE_C_KEYWORD("_Thread_local")
+    break;
+  default:
   }
-  CGEN_HANDLE_C_KEYWORD("continue")
-
+emit:
   fprintf(output_file, "%.*s", len, str);
 }
 
@@ -2434,10 +2549,8 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
   case AST_NODE_STRING_LITERAL:
   case AST_NODE_CHAR_LITERAL:
   case AST_NODE_BOOL_LITERAL:
-    fprintf(output_file, "%.*s", rhs->string_data_len, rhs->string_data);
-    break;
   case AST_NODE_NULL_LITERAL:
-    fprintf(output_file, "NULL");
+    fprintf(output_file, "%.*s", rhs->string_data_len, rhs->string_data);
     break;
   case AST_NODE_ARRAY_LITERAL:
     cgen_emit_array_literal(rhs);
@@ -2649,8 +2762,8 @@ void cgen_emit_func_def(struct ast_node *function) {
     const char *param_type =
         cgen_get_type_name(type_from_ast(ast_first_child(param)));
     struct ast_node *ident = ast_nth_child(param, 1);
-    fprintf(output_file, "%s %.*s", param_type, ident->string_data_len,
-            ident->string_data);
+    fprintf(output_file, "%s ", param_type);
+    cgen_emit_ident(ident);
     if (next_param != NULL) {
       fprintf(output_file, ", ");
     }
@@ -2705,6 +2818,9 @@ int main(int argc, char const *argv[]) {
               argv[2], strerror(errno));
       return EXIT_MISC_ERROR;
     }
+#define OUTPUT_BUF_SIZE 0x100000
+    char *buf = alloc_eternal(OUTPUT_BUF_SIZE, 16);
+    setbuffer(output_file, buf, OUTPUT_BUF_SIZE);
   } else if (argc == 2) {
     output_file = stdout;
   }
