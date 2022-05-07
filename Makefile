@@ -1,7 +1,12 @@
 VALID_TESTS = $(shell find tests/valid/ -type f -name '*.flac')
 
-transpiler: transpiler.c
-	gcc -o transpiler transpiler.c -Wall -Werror -Wextra -g
+all: transpiler-dbg transpiler-opt
+
+transpiler-opt: transpiler.c
+	gcc -o transpiler-opt transpiler.c -O3 -Wall -Werror -Wextra
+
+transpiler-dbg: transpiler.c
+	gcc -o transpiler-dbg transpiler.c -Wall -Werror -Wextra -g
 
 tests:
 	git clone "https://gitlab.doc.ic.ac.uk/lab2122_spring/wacc_examples/" examples
@@ -10,5 +15,5 @@ tests:
 	mv examples/valid tests/valid
 	rm -rf examples
 
-run-tests: transpiler tests
+run-tests: transpiler-opt
 	./run-tests.sh

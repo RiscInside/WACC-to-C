@@ -1,10 +1,13 @@
+#include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <search.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,26 @@ void *alloc(size_t size) {
     fprintf(stderr, "internal error: allocation failure\n");
     exit(EXIT_MISC_ERROR);
   }
+  return res;
+}
+
+// 1 TB
+#define ETERNAL_POOL_SIZE 1099511627776
+
+void *alloc_eternal(size_t size, size_t align) {
+  static void *current = NULL;
+  static size_t offset = 0;
+  if (current == NULL) {
+    current = mmap(NULL, ETERNAL_POOL_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (current == MAP_FAILED) {
+      perror("internal error: failed to map eternal memory pool");
+      exit(EXIT_MISC_ERROR);
+    }
+  }
+  offset = ((offset + align - 1) / align) * align;
+  void *res = (void *)((uintptr_t)current + offset);
+  offset += size;
   return res;
 }
 
@@ -388,7 +411,7 @@ void tok_report_unexpected(struct tok *buf, const char *expected_token_string) {
   struct pos pos;
   to_pos(buf->tok_start - source, &pos);
   fprintf(stderr,
-          "error at %s:%zu:%zu: unexpected token (expected %s, got \"%.*s\")\n",
+          "error at %s:%zu:%zu: unexpected token (expected %s, got \'%.*s\')\n",
           source_path, pos.line, pos.column, expected_token_string,
           buf->tok_size, buf->tok_start);
   exit(EXIT_SYNTAX_ERROR);
@@ -406,6 +429,10 @@ void tok_expect_token(int kind, const char *expected_token_string) {
   struct tok tok;
   tok_extract_of_type(&tok, kind, expected_token_string);
 }
+
+typedef uint32_t tindex_t;
+
+#define TINDEX_INVALID ((tindex_t)-1)
 
 struct ast_node {
   const char *string_data;
@@ -430,25 +457,21 @@ struct ast_node {
     AST_NODE_ARRAY_ELEM,     // <no tag> ident expr* (subscripts)
     AST_NODE_PAIR_ELEM,      // <fst|snd> expr
     AST_NODE_ARRAY_LITERAL,  // <no tag> expr*
-    AST_NODE_NEWPAIR,        // <no tag> expr expr
+    AST_NODE_RT_NEWPAIR,     // <no tag> expr expr
     AST_NODE_CALL,           // <function name> expr*
-    AST_NODE_INT,            // <no tag> [no children]
-    AST_NODE_BOOL,           // <no tag> [no children]
-    AST_NODE_CHAR,           // <no tag> [no children]
-    AST_NODE_STRING,         // <no tag> [no children]
-    AST_NODE_PAIRPTR,        // <"null"> [no children]
-    AST_NODE_ARRAY,          // <no tag> type
+    AST_NODE_PRIMITIVE_TYPE, // <int|bool|char|string|pair>
+    AST_NODE_ARRAY,          // non-array type
     AST_NODE_PAIR,           // <no tag> type type (not a pair in both cases)
     AST_NODE_INT_LITERAL,    // <int literal> [no children]
     AST_NODE_BOOL_LITERAL,   // <bool literal> [no children]
     AST_NODE_CHAR_LITERAL,   // <char literal> [no children]
     AST_NODE_STRING_LITERAL, // <string literal> [no children]
-    AST_NODE_PAIR_LITERAL,   // <pair literal> [no children]
+    AST_NODE_NULL_LITERAL,   // <"null"> [no children]
     AST_NODE_UNARY,          // <unary operator used> expr
     AST_NODE_BINARY,         // <binary operator used> expr
   } kind;
-  int token_id; // set for operators
-  int type_id;  // set for expressions
+  int token_id;    // set for operators
+  tindex_t tindex; // set for expressions
 };
 
 #define AST_NODES_MAX 16777216
@@ -456,14 +479,14 @@ struct ast_node {
 struct ast_node *ast_nodes;
 
 struct ast_node *ast_first_child(struct ast_node *cur) {
-  if (cur->first_child == EXIT_SYNTAX_ERROR) {
+  if (cur->first_child == -1) {
     return NULL;
   }
   return ast_nodes + cur->first_child;
 }
 
 struct ast_node *ast_next_child(struct ast_node *cur) {
-  if (cur->next_child == EXIT_SYNTAX_ERROR) {
+  if (cur->next_child == -1) {
     return NULL;
   }
   return ast_nodes + cur->next_child;
@@ -487,6 +510,16 @@ struct ast_node *ast_last_child(struct ast_node *cur) {
     cur = next;
   }
   return NULL;
+}
+
+size_t ast_count_children(struct ast_node *cur) {
+  size_t res = 0;
+  cur = ast_first_child(cur);
+  while (cur != NULL) {
+    res++;
+    cur = ast_next_child(cur);
+  }
+  return res;
 }
 
 void ast_add_first_child(struct ast_node *cur, struct ast_node *child) {
@@ -526,10 +559,12 @@ struct ast_node *ast_alloc_node(int kind) {
   }
   struct ast_node *res = ast_nodes + idx;
   res->kind = kind;
-  res->first_child = EXIT_SYNTAX_ERROR;
-  res->next_child = EXIT_SYNTAX_ERROR;
+  res->first_child = -1;
+  res->next_child = -1;
   res->string_data = NULL;
   res->string_data_len = 0;
+  res->token_id = -1;
+  res->tindex = TINDEX_INVALID;
   return res;
 }
 
@@ -564,11 +599,12 @@ struct ast_node *parse_type();
 
 struct ast_node *parse_pair_type_component() {
   struct tok tok;
-  tok_peek_token(&tok);
+  tok_peek_token_no_eof(&tok, "pair type component");
   if (tok.tok_kind == TOK_PAIR) {
     tok_poll_token(&tok);
-    struct ast_node *ptr = ast_alloc_node(AST_NODE_PAIRPTR);
-    ast_set_cstr(ptr, "pairptr");
+    struct ast_node *ptr = ast_alloc_node(AST_NODE_PRIMITIVE_TYPE);
+    ast_set_tag(ptr, tok.tok_start, tok.tok_size);
+    ptr->token_id = tok.tok_kind;
     return ptr;
   }
   return parse_type();
@@ -582,27 +618,23 @@ struct ast_node *parse_non_array_type() {
 
   switch (tok.tok_kind) {
   case TOK_INT:
-    res = ast_alloc_node_tok(AST_NODE_INT, &tok);
-    break;
   case TOK_BOOL:
-    res = ast_alloc_node_tok(AST_NODE_BOOL, &tok);
-    break;
   case TOK_STRING:
-    res = ast_alloc_node_tok(AST_NODE_STRING, &tok);
-    break;
   case TOK_CHAR:
-    res = ast_alloc_node_tok(AST_NODE_CHAR, &tok);
+    res = ast_alloc_node_tok(AST_NODE_PRIMITIVE_TYPE, &tok);
+    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    res->token_id = tok.tok_kind;
     break;
   case TOK_PAIR: {
     res = ast_alloc_node(AST_NODE_PAIR);
     ast_set_cstr(res, "pair");
     struct ast_node *last_child = NULL;
 
-    tok_expect_token(TOK_LPAREN, "\"(\"");
+    tok_expect_token(TOK_LPAREN, "\'(\'");
     ast_add_child(res, parse_pair_type_component(), &last_child);
-    tok_expect_token(TOK_COMMA, "\",\"");
+    tok_expect_token(TOK_COMMA, "\',\'");
     ast_add_child(res, parse_pair_type_component(), &last_child);
-    tok_expect_token(TOK_RPAREN, "\")\"");
+    tok_expect_token(TOK_RPAREN, "\')\'");
     break;
   }
   default:
@@ -620,7 +652,7 @@ struct ast_node *parse_type() {
       break;
     }
     tok_poll_token(&tok);
-    tok_expect_token(TOK_RBRACKET, "\"]\"");
+    tok_expect_token(TOK_RBRACKET, "\']\'");
     struct ast_node *arr = ast_alloc_node(AST_NODE_ARRAY);
     ast_set_cstr(arr, "array");
     ast_add_first_child(arr, res);
@@ -660,13 +692,13 @@ struct ast_node *parse_array_elem_or_ident() {
       return node;
     } else if (node == ident) {
       node = ast_alloc_node(AST_NODE_ARRAY_ELEM);
-      ast_set_cstr(node, "[]");
+      ast_set_tag(node, ident->string_data, ident->string_data_len);
       ast_add_child(node, ident, &last_child);
     }
     tok_poll_token(&tok);
     struct ast_node *expr = parse_expr();
     ast_add_child(node, expr, &last_child);
-    tok_expect_token(TOK_RBRACKET, "\"]\"");
+    tok_expect_token(TOK_RBRACKET, "\']\'");
   }
   return node;
 }
@@ -715,7 +747,7 @@ struct ast_node *parse_expr0() {
       struct pos pos;
       to_pos(tok.tok_start - source, &pos);
       fprintf(stderr,
-              "error at %s:%zu:%zu: integer constant \"%.*s\" outside of the "
+              "error at %s:%zu:%zu: integer constant \'%.*s\' outside of the "
               "valid range\n",
               source_path, pos.line, pos.column, tok.tok_size, tok.tok_start);
       exit(EXIT_SYNTAX_ERROR);
@@ -733,13 +765,13 @@ struct ast_node *parse_expr0() {
     break;
   case TOK_NULL:
     tok_poll_token(&tok);
-    res = ast_alloc_node(AST_NODE_PAIR_LITERAL);
+    res = ast_alloc_node(AST_NODE_NULL_LITERAL);
     ast_set_tag(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_LPAREN:
     tok_poll_token(&tok);
     res = parse_expr();
-    tok_expect_token(TOK_RPAREN, "\")\"");
+    tok_expect_token(TOK_RPAREN, "\')\'");
     break;
   case TOK_IDENT:
     res = parse_array_elem_or_ident(TOK_IDENT);
@@ -807,13 +839,13 @@ PARSE_BINARY_FUNC(parse_expr, parse_expr5, tok.tok_kind == TOK_OR)
 
 struct ast_node *parse_array_literal() {
   struct ast_node *res = ast_alloc_node(AST_NODE_ARRAY_LITERAL);
-  ast_set_cstr(res, "array_literal");
 
   struct ast_node *last_child = NULL;
-  tok_expect_token(TOK_LBRACKET, "\"[\"");
-
   struct tok tok;
-  tok_peek_token_no_eof(&tok, "expression or \"]\"");
+  tok_extract_of_type(&tok, TOK_LBRACKET, "\'[\'");
+  ast_set_tag(res, tok.tok_start, tok.tok_size);
+
+  tok_peek_token_no_eof(&tok, "expression or \']\'");
   if (tok.tok_kind == TOK_RBRACKET) {
     tok_poll_token(&tok);
     return res;
@@ -822,25 +854,28 @@ struct ast_node *parse_array_literal() {
   while (true) {
     ast_add_child(res, parse_expr(), &last_child);
 
-    tok_peek_token_no_eof(&tok, "\",\" or \"]\"");
+    tok_peek_token_no_eof(&tok, "\',\' or \']\'");
     if (tok.tok_kind == TOK_RBRACKET) {
       tok_poll_token(&tok);
       return res;
     }
-    tok_expect_token(TOK_COMMA, "\",\" or \"]\"");
+    tok_expect_token(TOK_COMMA, "\',\' or \']\'");
   }
 
   return res;
 }
 
 struct ast_node *parse_newpair() {
-  struct ast_node *res = ast_alloc_node(AST_NODE_NEWPAIR);
-  tok_expect_token(TOK_NEWPAIR, "newpair");
-  tok_expect_token(TOK_LPAREN, "\"(\"");
+  struct tok tok;
+  struct ast_node *res = ast_alloc_node(AST_NODE_RT_NEWPAIR);
+  tok_extract_of_type(&tok, TOK_NEWPAIR, "newpair");
+  ast_set_tag(res, tok.tok_start, tok.tok_size);
+
+  tok_expect_token(TOK_LPAREN, "\'(\'");
   struct ast_node *left = parse_expr();
-  tok_expect_token(TOK_COMMA, "\",\"");
+  tok_expect_token(TOK_COMMA, "\',\'");
   struct ast_node *right = parse_expr();
-  tok_expect_token(TOK_RPAREN, "\")\"");
+  tok_expect_token(TOK_RPAREN, "\')\'");
   ast_add_first_child(res, left);
   ast_add_next_child(left, right);
   return res;
@@ -855,6 +890,7 @@ struct ast_node *parse_pair_elem() {
   struct ast_node *node = ast_alloc_node(AST_NODE_PAIR_ELEM);
   ast_set_tag(node, tok.tok_start, tok.tok_size);
   ast_add_first_child(node, parse_expr());
+  node->token_id = tok.tok_kind;
   return node;
 }
 
@@ -862,13 +898,13 @@ struct ast_node *parse_call() {
   struct tok tok;
   tok_expect_token(TOK_CALL, "call");
   tok_extract_of_type(&tok, TOK_IDENT, "identifier");
-  tok_expect_token(TOK_LPAREN, "\"(\"");
+  tok_expect_token(TOK_LPAREN, "\'(\'");
 
   struct ast_node *node = ast_alloc_node(AST_NODE_CALL);
   struct ast_node *last_child = NULL;
   ast_set_tag(node, tok.tok_start, tok.tok_size);
 
-  tok_peek_token_no_eof(&tok, "\")\" or expression");
+  tok_peek_token_no_eof(&tok, "\')\' or expression");
   if (tok.tok_kind == TOK_RPAREN) {
     tok_poll_token(&tok);
     return node;
@@ -877,13 +913,13 @@ struct ast_node *parse_call() {
   while (true) {
     struct ast_node *param = parse_expr();
     ast_add_child(node, param, &last_child);
-    tok_poll_token_no_eof(&tok, "\",\" or \")\"");
+    tok_poll_token_no_eof(&tok, "\',\' or \')\'");
     if (tok.tok_kind == TOK_RPAREN) {
       return node;
     } else if (tok.tok_kind == TOK_COMMA) {
       continue;
     }
-    tok_report_unexpected(&tok, "\",\" or \")\"");
+    tok_report_unexpected(&tok, "\',\' or \')\'");
   }
 }
 
@@ -915,7 +951,7 @@ struct ast_node *parse_assign_rhs() {
 
 struct ast_node *parse_declaration_tail(struct ast_node *type,
                                         struct ast_node *ident) {
-  tok_expect_token(TOK_ASSIGN, "\"=\"");
+  tok_expect_token(TOK_ASSIGN, "\'=\'");
   struct ast_node *res = ast_alloc_node(AST_NODE_DECL);
   ast_set_tag(res, type->string_data, type->string_data_len);
   ast_add_first_child(res, type);
@@ -944,7 +980,7 @@ struct ast_node *parse_assignment() {
   ast_set_cstr(result, "assignment");
 
   struct ast_node *lhs = parse_assign_lhs();
-  tok_expect_token(TOK_ASSIGN, "\"=\"");
+  tok_expect_token(TOK_ASSIGN, "\'=\'");
   struct ast_node *rhs = parse_assign_rhs();
   ast_add_first_child(result, lhs);
   ast_add_next_child(lhs, rhs);
@@ -956,7 +992,7 @@ struct ast_node *parse_scope();
 struct ast_node *parse_explicit_scope() {
   struct tok tok;
   tok_extract_of_type(&tok, TOK_BEGIN, "begin");
-  struct ast_node *res = parse_scope(TOK_END, "\";\" or end");
+  struct ast_node *res = parse_scope(TOK_END, "\';\' or end");
   ast_set_tag(res, tok.tok_start, tok.tok_size);
   tok_expect_token(TOK_END, "end");
   return res;
@@ -971,9 +1007,9 @@ struct ast_node *parse_if() {
 
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_THEN, "then");
-  struct ast_node *theng = parse_scope(TOK_ELSE, "\";\" or else");
+  struct ast_node *theng = parse_scope(TOK_ELSE, "\';\' or else");
   tok_expect_token(TOK_ELSE, "else");
-  struct ast_node *elseg = parse_scope(TOK_FI, "\";\" or fi");
+  struct ast_node *elseg = parse_scope(TOK_FI, "\';\' or fi");
   tok_expect_token(TOK_FI, "fi");
 
   ast_add_first_child(res, cond);
@@ -992,7 +1028,7 @@ struct ast_node *parse_while() {
 
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_DO, "do");
-  struct ast_node *stmt = parse_scope(TOK_DONE, "\";\" or done");
+  struct ast_node *stmt = parse_scope(TOK_DONE, "\';\' or done");
   tok_expect_token(TOK_DONE, "done");
 
   ast_add_first_child(res, cond);
@@ -1050,7 +1086,7 @@ struct ast_node *parse_statement_atom() {
   return res;
 }
 
-// Do not forget to prepend "\";\"" to the term_expected_string, otherwise user
+// Do not forget to prepend "\';\'" to the term_expected_string, otherwise user
 // will be confused
 void parse_scope_in(struct ast_node *node, struct ast_node **last_child,
                     int term, const char *term_expected_string) {
@@ -1084,9 +1120,9 @@ struct ast_node *parse_scope_tailing_decl(struct ast_node *type,
   if (!tok_peek_token(&tok) || tok.tok_kind == TOK_END) {
     return res;
   }
-  tok_expect_token(TOK_SEMICOLON, "\";\" or end");
+  tok_expect_token(TOK_SEMICOLON, "\';\' or end");
 
-  parse_scope_in(res, &last_child, TOK_END, "\";\" or end");
+  parse_scope_in(res, &last_child, TOK_END, "\';\' or end");
   return res;
 }
 
@@ -1094,10 +1130,10 @@ struct ast_node *parse_parameter_list() {
   struct ast_node *result = ast_alloc_node(AST_NODE_PARAM_LIST);
   ast_set_cstr(result, "paramlist");
   struct ast_node *last_child = NULL;
-  tok_expect_token(TOK_LPAREN, "\"(\"");
+  tok_expect_token(TOK_LPAREN, "\'(\'");
 
   struct tok tok;
-  tok_peek_token_no_eof(&tok, "\")\" or parameter definition");
+  tok_peek_token_no_eof(&tok, "\')\' or parameter definition");
   if (tok.tok_kind == TOK_RPAREN) {
     tok_poll_token(&tok);
     return result;
@@ -1112,12 +1148,12 @@ struct ast_node *parse_parameter_list() {
     ast_add_next_child(type, name);
     ast_add_child(result, param, &last_child);
 
-    tok_peek_token_no_eof(&tok, "\",\" or \")\"");
+    tok_peek_token_no_eof(&tok, "\',\' or \')\'");
     if (tok.tok_kind == TOK_RPAREN) {
       tok_poll_token(&tok);
       return result;
     }
-    tok_expect_token(TOK_COMMA, "\",\" or \")\"");
+    tok_expect_token(TOK_COMMA, "\',\' or \')\'");
   }
 
   return result;
@@ -1126,10 +1162,10 @@ struct ast_node *parse_parameter_list() {
 struct ast_node *parse_function_tail(struct ast_node *type,
                                      struct ast_node *ident) {
   struct ast_node *function = ast_alloc_node(AST_NODE_FUNC);
-  ast_set_cstr(function, "function");
+  ast_set_tag(function, type->string_data, type->string_data_len);
   struct ast_node *params = parse_parameter_list();
   tok_expect_token(TOK_IS, "is");
-  struct ast_node *stmt = parse_scope(TOK_END, "\";\" or end");
+  struct ast_node *stmt = parse_scope(TOK_END, "\';\' or end");
   tok_expect_token(TOK_END, "end");
 
   ast_add_first_child(function, type);
@@ -1150,7 +1186,7 @@ struct ast_node *parse_program() {
     struct ast_node *ident = parse_ident();
 
     struct tok tok;
-    tok_peek_token_no_eof(&tok, "\"=\" or \"(\"");
+    tok_peek_token_no_eof(&tok, "\'=\' or \'(\'");
     if (tok.tok_kind == TOK_ASSIGN) {
       ast_add_child(res, parse_scope_tailing_decl(type, ident), &cur_child);
       tok_expect_token(TOK_END, "end");
@@ -1159,7 +1195,7 @@ struct ast_node *parse_program() {
     ast_add_child(res, parse_function_tail(type, ident), &cur_child);
   }
 
-  struct ast_node *statement = parse_scope(TOK_END, "\";\" or end");
+  struct ast_node *statement = parse_scope(TOK_END, "\';\' or end");
   ast_add_child(res, statement, &cur_child);
   tok_expect_token(TOK_END, "end");
 
@@ -1179,8 +1215,8 @@ struct ast_node *parse_program() {
 
 void mmap_ast_nodes() {
   ast_nodes = mmap(NULL, sizeof(struct ast_node) * AST_NODES_MAX,
-                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
-                   EXIT_SYNTAX_ERROR, 0);
+                   PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (ast_nodes == MAP_FAILED) {
     perror("internal error: failed to map ast nodes pool");
     exit(EXIT_MISC_ERROR);
@@ -1201,7 +1237,8 @@ void mmap_source() {
   }
   source_size = source_stat.st_size;
 
-  source = mmap(NULL, source_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  source =
+      mmap(NULL, source_size, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0);
   if (source == MAP_FAILED) {
     perror("internal error: failed to map the source file");
     exit(EXIT_MISC_ERROR);
@@ -1231,8 +1268,7 @@ void report_syntax_error_at_ast_node(struct ast_node *node, const char *fmt,
 
 static bool sema_checks_passed = true;
 
-void report_sema_error_at_ast_node(struct ast_node *node, const char *fmt,
-                                   ...) {
+void sema_report_error_at(struct ast_node *node, const char *fmt, ...) {
   va_list args;
   sema_checks_passed = false;
   va_start(args, fmt);
@@ -1240,36 +1276,16 @@ void report_sema_error_at_ast_node(struct ast_node *node, const char *fmt,
   va_end(args);
 }
 
+void sema_show_note_at(struct ast_node *node, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  report_at_ast_node(node, "note", fmt, args);
+  va_end(args);
+}
+
 void sema_assert_passed_checks() {
   if (!sema_checks_passed) {
     exit(EXIT_SEMANTIC_ERROR);
-  }
-}
-
-void check_no_returns_pass(struct ast_node *stmt) {
-  switch (stmt->kind) {
-  case AST_NODE_RETURN:
-    report_sema_error_at_ast_node(stmt,
-                                  "attempt to return from the main program");
-    break;
-  case AST_NODE_IF: {
-    struct ast_node *theng = ast_next_child(ast_first_child(stmt));
-    struct ast_node *elseg = ast_next_child(theng);
-    check_no_returns_pass(theng);
-    check_no_returns_pass(elseg);
-  } break;
-  case AST_NODE_WHILE: {
-    struct ast_node *body = ast_next_child(ast_first_child(stmt));
-    check_no_returns_pass(body);
-  } break;
-  case AST_NODE_SCOPE: {
-    struct ast_node *child = ast_first_child(stmt);
-    while (child != NULL) {
-      check_no_returns_pass(child);
-      child = ast_next_child(child);
-    }
-  } break;
-  default:
   }
 }
 
@@ -1306,7 +1322,887 @@ void check_returns_pass(struct ast_node *program) {
     check_scope_returns(scope);
     child = ast_next_child(child);
   }
-  check_no_returns_pass(child);
+}
+
+typedef size_t tkey_t;
+
+struct type {
+  tkey_t key;
+  const char *name;
+  enum {
+    TYPE_UNINIT,
+    TYPE_ARRAY,
+    TYPE_PAIR,
+  } kind;
+  tindex_t args[2];
+};
+
+#define TYPES_MAX 16777216
+
+#define TYPE_STRIDE (tkey_t)2
+#define TYPE_ARRAY_BASE (tkey_t)5
+#define TYPE_PAIR_BASE (tkey_t)6
+
+#define TINDEX_INT 0
+#define TINDEX_BOOL 1
+#define TINDEX_CHAR 2
+#define TINDEX_STRING 3
+#define TINDEX_PAIRPTR 4
+#define TINDEX_CONSTRUCTOR_BASE 5
+
+tkey_t type_array_compute_id(tindex_t elem_id) {
+  return TYPE_ARRAY_BASE + TYPE_STRIDE * (tkey_t)elem_id;
+}
+
+tkey_t type_pair_compute_id(tindex_t left, tindex_t right) {
+  return TYPE_PAIR_BASE +
+         TYPE_STRIDE * ((tkey_t)left * TYPES_MAX + (tkey_t)right);
+}
+
+struct type *types;
+void *types_tree = NULL;
+tindex_t type_last_allocated_idx = 0;
+
+void mmap_types() {
+  types = mmap(NULL, sizeof(struct type) * TYPES_MAX, PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (types == MAP_FAILED) {
+    perror("internal error: failed to map type nodes pool");
+    exit(EXIT_MISC_ERROR);
+  }
+}
+
+int types_compare_keys(const void *left, const void *right) {
+  tkey_t lkey = *(const tkey_t *)left;
+  tkey_t rkey = *(const tkey_t *)right;
+  if (lkey < rkey) {
+    return -1;
+  } else if (lkey == rkey) {
+    return 0;
+  }
+  return 1;
+}
+
+struct type *type_find_key(tkey_t key) {
+  struct type *res = tfind(&key, &types_tree, types_compare_keys);
+  if (res != NULL) {
+    return *(struct type **)res;
+  }
+  tindex_t idx = type_last_allocated_idx++;
+  if (idx >= TYPES_MAX) {
+    fprintf(stderr, "internal error: failed to allocate type node\n");
+    exit(EXIT_MISC_ERROR);
+  }
+  struct type *node = types + idx;
+  node->key = key;
+  node->name = NULL;
+  node->name = TYPE_UNINIT;
+  if (tsearch(node, &types_tree, types_compare_keys) == NULL) {
+    fprintf(stderr, "internal error: failed to construct type\n");
+    exit(EXIT_MISC_ERROR);
+  }
+  return node;
+}
+
+const char *type_get_name(tindex_t index);
+
+const char *dynamic_sprintf(const char *fmt, ...) {
+  va_list args;
+  va_list copy;
+  va_start(args, fmt);
+  va_copy(copy, args);
+
+  size_t size = vsnprintf(NULL, 0, fmt, args) + 1;
+  char *buf = alloc_eternal(size, 1);
+  vsnprintf(buf, size, fmt, copy);
+
+  va_end(args);
+  va_end(copy);
+
+  return buf;
+}
+
+const char *type_gen_name(struct type *type) {
+  if (type->name != NULL) {
+    return type->name;
+  }
+  switch (type->kind) {
+  case TYPE_ARRAY:
+    type->name = dynamic_sprintf("%s[]", type_get_name(type->args[0]));
+    return type->name;
+  case TYPE_PAIR:
+    type->name = dynamic_sprintf("pair(%s, %s)", type_get_name(type->args[0]),
+                                 type_get_name(type->args[1]));
+    return type->name;
+  default:
+    __builtin_unreachable();
+  }
+}
+
+const char *type_get_name(tindex_t index) {
+  switch (index) {
+  case TINDEX_INT:
+    return "int";
+  case TINDEX_BOOL:
+    return "bool";
+  case TINDEX_CHAR:
+    return "char";
+  case TINDEX_STRING:
+    return "string";
+  case TINDEX_PAIRPTR:
+    return "pair";
+  case TINDEX_INVALID:
+    return "#invalid#";
+  default: {
+    struct type *type = types + index - TINDEX_CONSTRUCTOR_BASE;
+    return type_gen_name(type);
+  }
+  }
+}
+
+tindex_t type_make_array(tindex_t inp) {
+  tkey_t key = type_array_compute_id(inp);
+  struct type *type = type_find_key(key);
+  if (type->kind == TYPE_UNINIT) {
+    type->kind = TYPE_ARRAY;
+    type->args[0] = inp;
+  }
+  return type - types + TINDEX_CONSTRUCTOR_BASE;
+}
+
+tindex_t type_make_pair(tindex_t left, tindex_t right) {
+  tkey_t key = type_pair_compute_id(left, right);
+  struct type *type = type_find_key(key);
+  if (type->kind == TYPE_UNINIT) {
+    type->kind = TYPE_PAIR;
+    type->args[0] = left;
+    type->args[1] = right;
+  }
+  return type - types + TINDEX_CONSTRUCTOR_BASE;
+}
+
+tindex_t type_of_array_elem(tindex_t index) {
+  if (index < TINDEX_CONSTRUCTOR_BASE) {
+    return TINDEX_INVALID;
+  }
+  struct type *type = types + index - TINDEX_CONSTRUCTOR_BASE;
+  if (type->kind != TYPE_ARRAY) {
+    return TINDEX_INVALID;
+  }
+  return type->args[0];
+}
+
+tindex_t type_of_pair_elem(tindex_t index, int second) {
+  if (index < TINDEX_CONSTRUCTOR_BASE) {
+    return TINDEX_INVALID;
+  }
+  struct type *type = types + index - TINDEX_CONSTRUCTOR_BASE;
+  if (type->kind != TYPE_PAIR) {
+    return TINDEX_INVALID;
+  }
+  return type->args[second];
+}
+
+bool type_is_array(tindex_t index) {
+  return type_of_array_elem(index) != TINDEX_INVALID;
+}
+
+bool type_is_pair(tindex_t index) {
+  return type_of_pair_elem(index, 0) != TINDEX_INVALID;
+}
+
+bool type_pair_strict_subtype_of(tindex_t lhs, tindex_t rhs) {
+  return (lhs == TINDEX_PAIRPTR && type_is_pair(rhs)) ||
+         (type_is_pair(lhs) && rhs == TINDEX_PAIRPTR);
+}
+
+bool type_substitutable_for(tindex_t lhs, tindex_t rhs) {
+  return lhs == rhs || lhs == TINDEX_INVALID || rhs == TINDEX_INVALID ||
+         type_pair_strict_subtype_of(lhs, rhs);
+}
+
+bool types_eq_valid(tindex_t lhs, tindex_t rhs) {
+  return type_substitutable_for(lhs, rhs);
+}
+
+tindex_t type_from_ast(struct ast_node *node) {
+  switch (node->kind) {
+  case AST_NODE_PRIMITIVE_TYPE:
+    switch (node->token_id) {
+    case TOK_INT:
+      return TINDEX_INT;
+    case TOK_BOOL:
+      return TINDEX_BOOL;
+    case TOK_CHAR:
+      return TINDEX_CHAR;
+    case TOK_STRING:
+      return TINDEX_STRING;
+    case TOK_PAIR:
+      return TINDEX_PAIRPTR;
+    default:
+      __builtin_unreachable();
+    }
+  case AST_NODE_ARRAY:
+    return type_make_array(type_from_ast(ast_first_child(node)));
+  case AST_NODE_PAIR:
+    return type_make_pair(type_from_ast(ast_first_child(node)),
+                          type_from_ast(ast_nth_child(node, 1)));
+  default:
+    __builtin_unreachable();
+  }
+}
+
+// https://stackoverflow.com/questions/7666509/hash-function-for-string
+inline static uint64_t MurmurOAAT64(const char *key, size_t len) {
+  uint64_t h = 525201411107845655ull;
+  for (size_t i = 0; i < len; ++i) {
+    h ^= *key;
+    h *= 0x5bd1e9955bd1e995;
+    h ^= h >> 47;
+  }
+  return h;
+}
+
+struct symbol {
+  struct symbol *prev;
+  uint64_t hash;
+  const char *str;
+  size_t len;
+  struct ast_node *ident;
+  int scope_id;
+  tindex_t tindex;
+  bool writable;
+};
+
+struct symbol *symbol_find(struct symbol *table, const char *str, size_t len,
+                           int scope_id) {
+  uint64_t hash = MurmurOAAT64(str, len);
+  while (table != NULL) {
+    if (scope_id != -1 && table->scope_id != scope_id) {
+      return NULL;
+    }
+    if (table->hash == hash && table->len == len &&
+        memcmp(table->str, str, len) == 0) {
+      return table;
+    }
+    table = table->prev;
+  }
+  return NULL;
+}
+
+void symbol_init(struct symbol *symbol, struct symbol *table,
+                 struct ast_node *ident, int scope_id, tindex_t index,
+                 bool writable) {
+  symbol->str = ident->string_data;
+  symbol->len = ident->string_data_len;
+  symbol->prev = table;
+  symbol->hash = MurmurOAAT64(symbol->str, symbol->len);
+  symbol->ident = ident;
+  symbol->scope_id = scope_id;
+  symbol->tindex = index;
+  symbol->writable = writable;
+
+  struct symbol *prev = symbol_find(table, symbol->str, symbol->len, scope_id);
+  if (prev != NULL) {
+    sema_report_error_at(ident, "redefinition of \'%.*s\'", symbol->len,
+                         symbol->str);
+    sema_show_note_at(prev->ident, "previous definition of \'%.*s\' is here",
+                      symbol->len, symbol->str);
+  }
+}
+
+#define symbol_push(_prev, _decl, _scope_id, _tindex, _writable)               \
+  ({                                                                           \
+    struct symbol *_ptr = alloca(sizeof(struct symbol));                       \
+    symbol_init(_ptr, _prev, _decl, _scope_id, _tindex, _writable);            \
+    _ptr;                                                                      \
+  })
+
+struct function_name {
+  const char *name;
+  size_t len;
+  uint64_t hash;
+};
+
+struct function {
+  struct function_name name;
+  tindex_t *argument_types;
+  uint32_t arguments_count;
+  tindex_t return_type;
+  struct ast_node *node;
+};
+
+#define FUNCTIONS_MAX 16777216
+
+struct function *functions;
+size_t functions_count = 0;
+void *functions_tree;
+
+int function_names_compare(const void *lhs, const void *rhs) {
+  const struct function_name *lfunc = lhs;
+  const struct function_name *rfunc = rhs;
+  if (lfunc->hash < rfunc->hash) {
+    return -1;
+  } else if (lfunc->hash > rfunc->hash) {
+    return 1;
+  }
+  return strncmp(lfunc->name, rfunc->name, lfunc->len);
+}
+
+void mmap_functions() {
+  functions = mmap(NULL, FUNCTIONS_MAX * sizeof(struct function),
+                   PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (functions == MAP_FAILED) {
+    perror("internal error: failed to map functions pool");
+    exit(EXIT_MISC_ERROR);
+  }
+}
+
+struct function *function_alloc() {
+  if (functions_count >= FUNCTIONS_MAX) {
+    fprintf(stderr,
+            "internal error: failed to allocate space for a new function");
+    exit(EXIT_MISC_ERROR);
+  }
+  return functions + functions_count++;
+}
+
+struct function *function_lookup(const char *name, size_t len) {
+  struct function_name name_struct;
+  name_struct.name = name;
+  name_struct.len = len;
+  name_struct.hash = MurmurOAAT64(name, len);
+  void **resptr = tfind(&name_struct, &functions_tree, function_names_compare);
+  if (resptr == NULL) {
+    return NULL;
+  }
+  return *resptr;
+}
+
+void function_from_ast_node(struct ast_node *node) {
+  struct ast_node *return_type_node = ast_first_child(node);
+  struct ast_node *name_node = ast_next_child(return_type_node);
+  struct ast_node *param_list = ast_next_child(name_node);
+
+  struct function *func =
+      function_lookup(name_node->string_data, name_node->string_data_len);
+  if (func != NULL) {
+    sema_report_error_at(node, "redeclaration of function \"%.*s\"",
+                         name_node->string_data_len, name_node->string_data);
+    sema_show_note_at(func->node, "previously declared here");
+    return;
+  }
+
+  func = function_alloc();
+  func->return_type = type_from_ast(return_type_node);
+  func->name.name = name_node->string_data;
+  func->name.len = name_node->string_data_len;
+  func->name.hash = MurmurOAAT64(func->name.name, func->name.len);
+  func->arguments_count = ast_count_children(param_list);
+  func->node = node;
+
+  func->argument_types =
+      alloc_eternal(sizeof(tindex_t) * func->arguments_count, 4);
+  struct ast_node *param = ast_first_child(param_list);
+  uint32_t current_index = 0;
+  while (param != NULL) {
+    func->argument_types[current_index++] =
+        type_from_ast(ast_first_child(param));
+    param = ast_next_child(param);
+  }
+
+  if (tsearch(func, &functions_tree, function_names_compare) == NULL) {
+    fprintf(
+        stderr,
+        "internal error: failed to add a new function to the lookup tree\n");
+    exit(EXIT_MISC_ERROR);
+  }
+}
+
+void functions_pass(struct ast_node *program) {
+  struct ast_node *function = ast_first_child(program);
+  while (function->kind == AST_NODE_FUNC) {
+    function_from_ast_node(function);
+    function = ast_next_child(function);
+  }
+}
+
+void sema_visit_ident(struct symbol *table, struct ast_node *ident) {
+  struct symbol *sym =
+      symbol_find(table, ident->string_data, ident->string_data_len, -1);
+  if (sym == NULL) {
+    sema_report_error_at(ident, "\'%.*s\' undeclared", ident->string_data_len,
+                         ident->string_data);
+    return;
+  }
+  ident->tindex = sym->tindex;
+}
+
+void sema_visit_expr(struct symbol *table, struct ast_node *rhs);
+
+void sema_visit_pair_elem(struct symbol *table, struct ast_node *pair_elem) {
+  bool index = pair_elem->token_id == TOK_SND;
+  struct ast_node *pair = ast_first_child(pair_elem);
+  sema_visit_expr(table, pair);
+  if (pair->tindex == TINDEX_INVALID) {
+    return;
+  }
+  tindex_t elem_type = type_of_pair_elem(pair->tindex, index);
+  if (elem_type == TINDEX_INVALID) {
+    sema_report_error_at(pair, "expression of type \'%s\' is not a pair",
+                         type_get_name(pair->tindex));
+  }
+  pair_elem->tindex = elem_type;
+}
+
+void sema_visit_binary_operator(struct symbol *table, struct ast_node *node) {
+  int operator_token = node->token_id;
+  struct ast_node *lhs = ast_first_child(node);
+  struct ast_node *rhs = ast_next_child(lhs);
+
+  sema_visit_expr(table, lhs);
+  sema_visit_expr(table, rhs);
+
+  if (lhs->tindex == TINDEX_INVALID || rhs->tindex == TINDEX_INVALID) {
+    return;
+  }
+
+  switch (operator_token) {
+  case TOK_GT_SIGN:
+  case TOK_GE_SIGN:
+  case TOK_LT_SIGN:
+  case TOK_LE_SIGN:
+    if (lhs->tindex == TINDEX_CHAR || rhs->tindex == TINDEX_INT) {
+      node->tindex = TINDEX_BOOL;
+      return;
+    }
+    // fallthrough
+  case TOK_ASTERIX:
+  case TOK_SLASH:
+  case TOK_PERCENT_SIGN:
+  case TOK_PLUS_SIGN:
+  case TOK_DASH:
+    if (lhs->tindex == TINDEX_INT && rhs->tindex == TINDEX_INT) {
+      node->tindex = TINDEX_INT;
+      return;
+    }
+    break;
+  case TOK_AND:
+  case TOK_OR:
+    if (lhs->tindex == TINDEX_BOOL && rhs->tindex == TINDEX_BOOL) {
+      node->tindex = TINDEX_BOOL;
+      return;
+    }
+    break;
+  case TOK_EQ_SIGN:
+  case TOK_NE_SIGN:
+    if (types_eq_valid(lhs->tindex, rhs->tindex)) {
+      node->tindex = TINDEX_BOOL;
+      return;
+    }
+    return;
+  }
+  sema_report_error_at(node,
+                       "invalid operands to binary '%.*s' (have '%s' and '%s')",
+                       node->string_data_len, node->string_data,
+                       type_get_name(lhs->tindex), type_get_name(rhs->tindex));
+}
+
+void sema_visit_unary_operator(struct symbol *table, struct ast_node *node) {
+  int operator_token = node->token_id;
+  struct ast_node *inp = ast_first_child(node);
+
+  sema_visit_expr(table, inp);
+  if (inp->tindex == TINDEX_INVALID) {
+    return;
+  }
+
+  switch (operator_token) {
+  case TOK_DASH:
+    if (inp->tindex == TINDEX_INT) {
+      node->tindex = TINDEX_INT;
+      return;
+    }
+    break;
+  case TOK_LEN:
+    if (type_is_array(inp->tindex)) {
+      node->tindex = TINDEX_INT;
+      return;
+    }
+    break;
+  case TOK_ORD:
+    if (inp->tindex == TINDEX_CHAR) {
+      node->tindex = TINDEX_INT;
+      return;
+    }
+    break;
+  case TOK_CHR:
+    if (inp->tindex == TINDEX_INT) {
+      node->tindex = TINDEX_CHAR;
+      return;
+    }
+    break;
+  case TOK_EXCLAMATION_MARK:
+    if (inp->tindex == TINDEX_BOOL) {
+      node->tindex = TINDEX_BOOL;
+      return;
+    }
+    break;
+  }
+
+  sema_report_error_at(node, "wrong type argument to unary '%.*s'",
+                       node->string_data_len, node->string_data,
+                       type_get_name(inp->tindex));
+}
+
+void sema_visit_array_elem(struct symbol *table, struct ast_node *node) {
+  struct ast_node *ident_node = ast_first_child(node);
+  sema_visit_ident(table, ident_node);
+
+  tindex_t result = ident_node->tindex;
+  struct ast_node *subscript = ast_next_child(ident_node);
+  while (subscript != NULL) {
+    sema_visit_expr(table, subscript);
+    if (subscript->tindex != TINDEX_INT &&
+        subscript->tindex != TINDEX_INVALID) {
+      sema_report_error_at(node, "array subscript is not an integer");
+      return;
+    }
+    tindex_t next = type_of_array_elem(result);
+    if (next == TINDEX_INVALID) {
+      sema_report_error_at(
+          node, "subscripted value is not an array or lacks dimensions");
+      return;
+    }
+    result = next;
+    subscript = ast_next_child(subscript);
+  }
+
+  node->tindex = result;
+}
+
+void sema_visit_call(struct symbol *table, struct ast_node *call) {
+  (void)table;
+  struct function *function =
+      function_lookup(call->string_data, call->string_data_len);
+  if (function == NULL) {
+    sema_report_error_at(call, "use of undeclared function \"%.*s\"",
+                         call->string_data_len, call->string_data);
+    return;
+  }
+  uint32_t args_count = 0;
+  struct ast_node *arg = ast_first_child(call);
+  while (arg != NULL) {
+    sema_visit_expr(table, arg);
+    uint32_t arg_idx = args_count++;
+    if (arg_idx < function->arguments_count) {
+      tindex_t expected = function->argument_types[arg_idx];
+      tindex_t got = arg->tindex;
+      if (!type_substitutable_for(got, expected)) {
+        sema_report_error_at(
+            arg, "passing '%s' to parameter of incompatible type '%s'",
+            type_get_name(got), type_get_name(expected));
+      }
+    }
+    arg = ast_next_child(arg);
+  }
+
+  if (args_count < function->arguments_count) {
+    sema_report_error_at(
+        call, "too few arguments to function call (expected %u, got %u)",
+        function->arguments_count, args_count);
+  } else if (args_count > function->arguments_count) {
+    sema_report_error_at(
+        call, "too many arguments to function call (expected %u, got %u)",
+        function->arguments_count, args_count);
+  }
+  call->tindex = function->return_type;
+}
+
+void sema_check_init_with(struct ast_node *node, tindex_t expected) {
+  if (!type_substitutable_for(node->tindex, expected)) {
+    sema_report_error_at(node,
+                         "initializing '%s' with an expression of type '%s'",
+                         type_get_name(expected), type_get_name(node->tindex));
+  }
+}
+
+void sema_visit_array_literal(struct symbol *table, struct ast_node *literal,
+                              tindex_t array_type) {
+  literal->tindex = array_type;
+  tindex_t elem_type = array_type == TINDEX_INVALID
+                           ? TINDEX_INVALID
+                           : type_of_array_elem(array_type);
+  if (elem_type == TINDEX_INVALID && array_type != TINDEX_INVALID) {
+    sema_report_error_at(literal, "array literal not expected here");
+    return;
+  }
+  struct ast_node *elem = ast_first_child(literal);
+  if (elem == NULL) {
+    return;
+  }
+  while (elem != NULL) {
+    sema_visit_expr(table, elem);
+    sema_check_init_with(elem, elem_type);
+    elem = ast_next_child(elem);
+  }
+}
+
+void sema_visit_newpair(struct symbol *table, struct ast_node *newpair,
+                        tindex_t pair_type) {
+  newpair->tindex = pair_type;
+
+  struct ast_node *left = ast_first_child(newpair);
+  struct ast_node *right = ast_next_child(left);
+  sema_visit_expr(table, left);
+  sema_visit_expr(table, right);
+
+  tindex_t left_elem = type_of_pair_elem(pair_type, 0);
+  tindex_t right_elem = type_of_pair_elem(pair_type, 1);
+  if (left_elem == TINDEX_INVALID) {
+    sema_report_error_at(newpair, "newpair not expected here");
+    return;
+  }
+  sema_check_init_with(left, left_elem);
+  sema_check_init_with(right, right_elem);
+}
+
+void sema_visit_expr(struct symbol *table, struct ast_node *expr) {
+  switch (expr->kind) {
+  case AST_NODE_IDENT:
+    sema_visit_ident(table, expr);
+    break;
+  case AST_NODE_ARRAY_ELEM:
+    sema_visit_array_elem(table, expr);
+    break;
+  case AST_NODE_PAIR_ELEM:
+    sema_visit_pair_elem(table, expr);
+    break;
+  case AST_NODE_CALL:
+    sema_visit_call(table, expr);
+    break;
+  case AST_NODE_UNARY:
+    sema_visit_unary_operator(table, expr);
+    break;
+  case AST_NODE_BINARY:
+    sema_visit_binary_operator(table, expr);
+    break;
+  case AST_NODE_INT_LITERAL:
+    expr->tindex = TINDEX_INT;
+    break;
+  case AST_NODE_BOOL_LITERAL:
+    expr->tindex = TINDEX_BOOL;
+    break;
+  case AST_NODE_CHAR_LITERAL:
+    expr->tindex = TINDEX_CHAR;
+    break;
+  case AST_NODE_STRING_LITERAL:
+    expr->tindex = TINDEX_STRING;
+    break;
+  case AST_NODE_NULL_LITERAL:
+    expr->tindex = TINDEX_PAIRPTR;
+    break;
+  default:
+    __builtin_unreachable();
+  }
+}
+
+void sema_visit_assign_lhs(struct symbol *table, struct ast_node *lhs) {
+  switch (lhs->kind) {
+  case AST_NODE_IDENT:
+    sema_visit_ident(table, lhs);
+    break;
+  case AST_NODE_ARRAY_ELEM:
+    sema_visit_array_elem(table, lhs);
+    break;
+  case AST_NODE_PAIR_ELEM:
+    sema_visit_pair_elem(table, lhs);
+    break;
+  default:
+    __builtin_unreachable();
+  }
+}
+
+void sema_visit_return(struct symbol *table, struct ast_node *node,
+                       tindex_t return_type) {
+  if (return_type == TINDEX_INVALID) {
+    sema_report_error_at(node, "attempt to return from the main program");
+    return;
+  }
+  struct ast_node *expr = ast_first_child(node);
+  sema_visit_expr(table, expr);
+  if (!type_substitutable_for(expr->tindex, return_type)) {
+    sema_report_error_at(
+        node,
+        "incompatible types when returning type '%s' but '%s' was expected",
+        type_get_name(expr->tindex), type_get_name(return_type));
+  }
+}
+
+void sema_visit_assign_rhs(struct symbol *table, struct ast_node *rhs,
+                           tindex_t constraint) {
+  switch (rhs->kind) {
+  case AST_NODE_RT_NEWPAIR:
+    sema_visit_newpair(table, rhs, constraint);
+    break;
+  case AST_NODE_ARRAY_LITERAL:
+    sema_visit_array_literal(table, rhs, constraint);
+    break;
+  default:
+    sema_visit_expr(table, rhs);
+    sema_check_init_with(rhs, constraint);
+  }
+}
+
+void sema_visit_decl(struct symbol *table, struct ast_node *decl) {
+  struct ast_node *type = ast_first_child(decl);
+  struct ast_node *expr = ast_nth_child(decl, 2);
+  sema_visit_assign_rhs(table, expr, type_from_ast(type));
+}
+
+void sema_visit_assignment(struct symbol *table, struct ast_node *assignment) {
+  struct ast_node *lhs = ast_first_child(assignment);
+  struct ast_node *rhs = ast_next_child(lhs);
+  sema_visit_assign_lhs(table, lhs);
+  sema_visit_assign_rhs(table, rhs, lhs->tindex);
+}
+
+void sema_visit_rt_call(struct symbol *table, struct ast_node *rt_call) {
+  struct ast_node *arg = ast_first_child(rt_call);
+  sema_visit_expr(table, arg);
+  switch (rt_call->token_id) {
+  case TOK_FREE:
+    if (arg->tindex < TINDEX_CONSTRUCTOR_BASE &&
+        arg->tindex != TINDEX_PAIRPTR) {
+      sema_report_error_at(arg,
+                           "attempt to free value of primitive type \"%s\"",
+                           type_get_name(rt_call->tindex));
+    }
+    break;
+  case TOK_EXIT:
+    if (!type_substitutable_for(TINDEX_INT, arg->tindex)) {
+      sema_report_error_at(arg, "exit codes can only be integers");
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+void sema_visit_rt_read(struct symbol *table, struct ast_node *rt_call) {
+  struct ast_node *arg = ast_first_child(rt_call);
+  sema_visit_assign_lhs(table, arg);
+  if (!type_substitutable_for(arg->tindex, TINDEX_INT) &&
+      !type_substitutable_for(arg->tindex, TINDEX_CHAR)) {
+    sema_report_error_at(
+        arg, "attempt to read into location of unsupported type \'%s\'",
+        type_get_name(arg->tindex));
+  }
+}
+
+void sema_visit_scope(struct symbol *table, int scope_id,
+                      struct ast_node *scope, tindex_t return_type);
+
+void sema_visit_if(struct symbol *table, int scope_id, struct ast_node *ifstmt,
+                   tindex_t return_type) {
+  struct ast_node *cond = ast_first_child(ifstmt);
+  struct ast_node *theng = ast_next_child(cond);
+  struct ast_node *elseg = ast_next_child(theng);
+
+  sema_visit_expr(table, cond);
+  if (!type_substitutable_for(cond->tindex, TINDEX_BOOL)) {
+    sema_report_error_at(cond,
+                         "if statement condition has to be a boolean value "
+                         "(got type \'%s\' instead)",
+                         type_get_name(cond->tindex));
+  }
+
+  sema_visit_scope(table, scope_id + 1, theng, return_type);
+  sema_visit_scope(table, scope_id + 1, elseg, return_type);
+}
+
+void sema_visit_while(struct symbol *table, int scope_id,
+                      struct ast_node *whilestmt, tindex_t return_type) {
+  struct ast_node *cond = ast_first_child(whilestmt);
+  struct ast_node *body = ast_next_child(cond);
+
+  sema_visit_expr(table, cond);
+  if (!type_substitutable_for(cond->tindex, TINDEX_BOOL)) {
+    sema_report_error_at(cond,
+                         "while loop condition has to be a boolean value (got "
+                         "type \'%s\' instead)",
+                         type_get_name(cond->tindex));
+  }
+
+  sema_visit_scope(table, scope_id + 1, body, return_type);
+}
+
+void sema_visit_scope(struct symbol *table, int scope_id,
+                      struct ast_node *scope, tindex_t return_type) {
+  struct ast_node *stmt = ast_first_child(scope);
+  while (stmt != NULL) {
+    switch (stmt->kind) {
+    case AST_NODE_DECL:
+      table = symbol_push(table, ast_nth_child(stmt, 1), scope_id,
+                          type_from_ast(ast_first_child(stmt)), true);
+      sema_visit_decl(table, stmt);
+      break;
+    case AST_NODE_ASSIGNMENT:
+      sema_visit_assignment(table, stmt);
+      break;
+    case AST_NODE_SKIP:
+      break;
+    case AST_NODE_RT_CALL:
+      sema_visit_rt_call(table, stmt);
+      break;
+    case AST_NODE_RETURN:
+      sema_visit_return(table, stmt, return_type);
+      break;
+    case AST_NODE_RT_READ:
+      sema_visit_rt_read(table, stmt);
+      break;
+    case AST_NODE_IF:
+      sema_visit_if(table, scope_id, stmt, return_type);
+      break;
+    case AST_NODE_WHILE:
+      sema_visit_while(table, scope_id, stmt, return_type);
+      break;
+    case AST_NODE_SCOPE:
+      sema_visit_scope(table, scope_id + 1, stmt, return_type);
+      break;
+    default:
+      __builtin_unreachable();
+    }
+    stmt = ast_next_child(stmt);
+  }
+}
+
+void sema_visit_function(struct ast_node *node) {
+  tindex_t return_index = type_from_ast(ast_first_child(node));
+
+  struct ast_node *param_list = ast_nth_child(node, 2);
+  struct symbol *table = NULL;
+  struct ast_node *param = ast_first_child(param_list);
+
+  while (param != NULL) {
+    struct ast_node *name = ast_nth_child(param, 1);
+    table = symbol_push(table, name, 0, type_from_ast(ast_first_child(param)),
+                        false);
+    param = ast_next_child(param);
+  }
+
+  struct ast_node *scope = ast_nth_child(node, 3);
+  sema_visit_scope(table, 1, scope, return_index);
+}
+
+void sema_main_pass(struct ast_node *program) {
+  struct ast_node *child = ast_first_child(program);
+  while (child->kind == AST_NODE_FUNC) {
+    sema_visit_function(child);
+    child = ast_next_child(child);
+  }
+  sema_visit_scope(NULL, 0, child, TINDEX_INVALID);
 }
 
 bool verify_extension(const char *path) {
@@ -1331,13 +2227,13 @@ const char *replace_wacc_extension(const char *path) {
 int main(int argc, char const *argv[]) {
   if (argc != 2 && argc != 3) {
     fprintf(stderr, "usage: %s <source path> [<output path>]\n", argv[0]);
-    return EXIT_SYNTAX_ERROR;
+    return EXIT_MISC_ERROR;
   }
 
   source_path = argv[1];
   if (!verify_extension(source_path)) {
     fprintf(stderr, "error: source path should end with .wacc\n");
-    return EXIT_SYNTAX_ERROR;
+    return EXIT_MISC_ERROR;
   }
 
   const char *output_path = argv[2];
@@ -1348,10 +2244,15 @@ int main(int argc, char const *argv[]) {
 
   mmap_source();
   mmap_ast_nodes();
+  mmap_types();
+  mmap_functions();
 
   struct ast_node *ast = parse_program();
   check_returns_pass(ast);
 
+  functions_pass(ast);
+  sema_main_pass(ast);
+
   sema_assert_passed_checks();
-  ast_dump(ast, 0);
+  // ast_dump(ast, 0);
 }
