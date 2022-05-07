@@ -2235,7 +2235,8 @@ FILE *output_file;
   "int scanf(const char *restrict format, ...);\n"                             \
   "\n"                                                                         \
   "void $printCharArray(const char *arr, bool newline) { int len = "           \
-  "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len); } \n"
+  "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len, arr); } "  \
+  "\n"
 
 void cgen_emit_sep() { fputc('\n', output_file); }
 
