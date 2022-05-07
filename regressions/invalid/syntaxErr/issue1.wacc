@@ -1,0 +1,56 @@
+# 0 "wacc.wacc.in"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "wacc.wacc.in"
+begin
+
+# 1 "lexer.wacc.in" 1
+
+
+
+# 1 "gen/lexer.wacc.in" 1
+# 18 "gen/lexer.wacc.in"
+pair(int, pair) lexer_new(
+    char[] source,
+    int start,
+    int current
+) is
+    int l__ctor = current;
+    char[] lr__ctor = source;
+    int rr__ctor = start;
+    pair(char[], int) r__ctor = newpair(lr__ctor, rr__ctor);
+    pair(int, pair) __ctor = newpair(l__ctor, r__ctor);
+    return __ctor
+end
+# 5 "lexer.wacc.in" 2
+# 1 "gen/token.wacc.in" 1
+# 18 "gen/token.wacc.in"
+pair(int, pair) token_new(
+    int type,
+    int start,
+    int length
+) is
+    int l__ctor = length;
+    int lr__ctor = type;
+    int rr__ctor = start;
+    pair(int, int) r__ctor = newpair(lr__ctor, rr__ctor);
+    pair(int, pair) __ctor = newpair(l__ctor, r__ctor);
+    return __ctor
+end
+# 6 "lexer.wacc.in" 2
+
+char advance(pair(int, pair) __objlexer) is int current = fst __objlexer; pair(char[], int) __sndobjlexer = snd __objlexer; char[] source = fst __sndobjlexer; int start = snd __sndobjlexer;
+    char ret = source[current];
+    fst __objlexer = current + 1; current = current + 1;
+    return ret
+end
+
+pair(int, pair) next_token(pair(int, pair) __objlexer) is int current = fst __objlexer; pair(char[], int) __sndobjlexer = snd __objlexer; char[] source = fst __sndobjlexer; int start = snd __sndobjlexer;
+
+    snd __sndobjlexer = current; start = current
+end
+# 4 "wacc.wacc.in" 2
+
+println "Hello, World!"
+
+end

@@ -1,5 +1,3 @@
-VALID_TESTS = $(shell find tests/valid/ -type f -name '*.flac')
-
 all: transpiler-dbg transpiler-opt
 
 transpiler-opt: transpiler.c
