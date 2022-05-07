@@ -1,6 +1,7 @@
 #include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <search.h>
@@ -27,15 +28,6 @@ const char *source_path;
 const char *source;
 size_t source_size;
 size_t source_pos = 0;
-
-void *alloc(size_t size) {
-  void *res = malloc(size);
-  if (res == NULL) {
-    fprintf(stderr, "internal error: allocation failure\n");
-    exit(EXIT_MISC_ERROR);
-  }
-  return res;
-}
 
 // 1 TB
 #define ETERNAL_POOL_SIZE 1099511627776
@@ -575,23 +567,9 @@ struct ast_node *ast_alloc_node_tok(int kind, struct tok *tok) {
   return res;
 }
 
-void repeat(const char *str, int times) {
+void frepeat(FILE *f, const char *str, int times) {
   for (int i = 0; i < times; ++i) {
-    fputs(str, stderr);
-  }
-}
-
-void ast_dump(struct ast_node *node, int ident_lvl) {
-  if (ident_lvl != 0) {
-    repeat("  ", ident_lvl - 1);
-    fputs("- ", stderr);
-  }
-  fprintf(stderr, "%d < %.*s >\n", node->kind, node->string_data_len,
-          node->string_data);
-  struct ast_node *child = ast_first_child(node);
-  while (child != NULL) {
-    ast_dump(child, ident_lvl + 1);
-    child = ast_next_child(child);
+    fputs(str, f);
   }
 }
 
@@ -708,8 +686,6 @@ struct ast_node *parse_expr0() {
   struct ast_node *res;
   tok_peek_token_no_eof(&tok, "primary expression");
 
-  bool negate_integer_literal = false;
-
   switch (tok.tok_kind) {
   case TOK_BOOL_LITERAL:
     tok_poll_token(&tok);
@@ -732,13 +708,19 @@ struct ast_node *parse_expr0() {
         break;
       }
     }
-    negate_integer_literal = tok.tok_kind == TOK_DASH;
   }
   // fallthrough
-  case TOK_INT_LITERAL:
+  case TOK_INT_LITERAL: {
     tok_poll_token(&tok);
+    char prev = tok.tok_start == source ? '\0' : *(tok.tok_start - 1);
+    bool negate_integer_literal = prev == '-';
+    bool extend_integer_literal = prev == '-' || prev == '+';
     res = ast_alloc_node(AST_NODE_INT_LITERAL);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    if (extend_integer_literal) {
+      ast_set_tag(res, tok.tok_start - 1, tok.tok_size + 1);
+    } else {
+      ast_set_tag(res, tok.tok_start, tok.tok_size);
+    }
     // should be safe, since after the token there could only be a null
     // character or some non-numeric character
     long value = strtol(tok.tok_start, NULL, 10);
@@ -752,7 +734,7 @@ struct ast_node *parse_expr0() {
               source_path, pos.line, pos.column, tok.tok_size, tok.tok_start);
       exit(EXIT_SYNTAX_ERROR);
     }
-    break;
+  } break;
   case TOK_CHAR_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_CHAR_LITERAL);
@@ -1226,13 +1208,14 @@ void mmap_ast_nodes() {
 void mmap_source() {
   int fd = open(source_path, O_RDONLY);
   if (fd < 0) {
-    perror("error: failed to open the source file");
+    fprintf(stderr, "error: failed to open the source file \'%s\': %s",
+            source_path, strerror(errno));
     exit(EXIT_MISC_ERROR);
   }
 
   struct stat source_stat;
   if (fstat(fd, &source_stat) != 0) {
-    perror("error: failed to get source file size");
+    perror("internal error: failed to get source file size");
     exit(EXIT_MISC_ERROR);
   }
   source_size = source_stat.st_size;
@@ -1335,6 +1318,9 @@ struct type {
     TYPE_PAIR,
   } kind;
   tindex_t args[2];
+  const char *c_name;
+  const char *c_free_name;
+  const char *c_alloc_name;
 };
 
 #define TYPES_MAX 16777216
@@ -2211,17 +2197,467 @@ bool verify_extension(const char *path) {
   return memcmp(path + len - extension_len, WACC_EXTENSION, extension_len) == 0;
 }
 
-const char *replace_wacc_extension(const char *path) {
-  size_t len = strlen(path);
-  size_t wacc_extension_len = strlen(WACC_EXTENSION);
-  size_t c_extension_len = strlen(C_EXTENSION);
-  size_t new_len = len - wacc_extension_len + c_extension_len;
+FILE *output_file;
 
-  char *res = alloc(new_len + 1);
-  memcpy(res, path, len - wacc_extension_len);
-  memcpy(res + (len - wacc_extension_len), C_EXTENSION, c_extension_len);
-  res[new_len] = '\0';
-  return res;
+#define CGEN_IDENT_SEQ "\t"
+#define CGEN_PRELUDE                                                           \
+  "#include <stdbool.h>\n"                                                     \
+  "#include <stddef.h>\n"                                                      \
+  "#include <stdlib.h>\n"                                                      \
+  "#include <string.h>\n"                                                      \
+  "\n"                                                                         \
+  "typedef int Int;\n"                                                         \
+  "typedef char Char;\n"                                                       \
+  "typedef bool Bool;\n"                                                       \
+  "typedef const char *String;\n"                                              \
+  "typedef void *PairPtr;\n"                                                   \
+  "\n"                                                                         \
+  "int $arrayLength(const void *s) { size_t *ss = (size_t *)s; return "        \
+  "(Int)*(ss "                                                                 \
+  "- 1); }\n"                                                                  \
+  "int printf(const char *restrict format, ...);\n"                            \
+  "int scanf(const char *restrict format, ...);\n"                             \
+  "\n"                                                                         \
+  "void $printCharArray(const char *arr, bool newline) { int len = "           \
+  "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len); } \n"
+
+void cgen_emit_sep() { fputc('\n', output_file); }
+
+void cgen_emit_line(int ident_level, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+
+  frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+  vfprintf(output_file, fmt, args);
+  cgen_emit_sep();
+
+  va_end(args);
+}
+
+const char *cgen_get_type_name(tindex_t index) {
+  switch (index) {
+  case TINDEX_INT:
+    return "Int";
+  case TINDEX_BOOL:
+    return "Bool";
+  case TINDEX_CHAR:
+    return "Char";
+  case TINDEX_STRING:
+    return "String";
+  case TINDEX_PAIRPTR:
+    return "PairPtr";
+  default:
+    return (types + index - TINDEX_CONSTRUCTOR_BASE)->c_name;
+  }
+}
+
+void cgen_emit_typedef(struct type *type) {
+  switch (type->kind) {
+  case TYPE_ARRAY: {
+    const char *elem_name = cgen_get_type_name(type->args[0]);
+    const char *array_name = dynamic_sprintf("ArrayOf%s", elem_name);
+    const char *alloc_name = dynamic_sprintf("$alloc%s", array_name);
+    const char *free_name = dynamic_sprintf("$free%s", array_name);
+
+    type->c_name = array_name;
+    type->c_alloc_name = alloc_name;
+    type->c_free_name = free_name;
+
+    cgen_emit_line(0, "typedef %s* %s;", elem_name, array_name);
+    cgen_emit_sep();
+
+    cgen_emit_line(0, "%s %s(%s *elems, int count) {", array_name, alloc_name,
+                   elem_name);
+    cgen_emit_line(
+        1,
+        "size_t memory_needed = (size_t)count * sizeof(%s) + sizeof(size_t);",
+        elem_name);
+    cgen_emit_line(1, "size_t *res = malloc(memory_needed);");
+    cgen_emit_line(1, "if (res == NULL) return NULL;");
+    cgen_emit_line(1, "*res = (size_t)count;");
+    cgen_emit_line(1, "memcpy(res + 1, elems, (size_t)count * sizeof(%s));",
+                   elem_name);
+    cgen_emit_line(1, "return (%s)(res + 1);", array_name);
+    cgen_emit_line(0, "}");
+    cgen_emit_sep();
+
+    cgen_emit_line(0, "void %s(%s ptr) {", free_name, array_name);
+    cgen_emit_line(1, "free((size_t *)ptr - 1);");
+    cgen_emit_line(0, "}");
+  } break;
+  case TYPE_PAIR: {
+    const char *fst_name = cgen_get_type_name(type->args[0]);
+    const char *snd_name = cgen_get_type_name(type->args[1]);
+    const char *pair_name =
+        dynamic_sprintf("PairOf%sAnd%s", fst_name, snd_name);
+    const char *alloc_name = dynamic_sprintf("$alloc%s", pair_name);
+    const char *free_name = "free";
+    type->c_name = pair_name;
+    type->c_alloc_name = alloc_name;
+    type->c_free_name = free_name;
+
+    cgen_emit_line(0, "typedef struct {");
+    cgen_emit_line(1, "%s fst;", fst_name);
+    cgen_emit_line(1, "%s snd;", snd_name);
+    cgen_emit_line(0, "} *%s;", pair_name);
+    cgen_emit_sep();
+
+    cgen_emit_line(0, "%s %s(%s fst, %s snd) {", pair_name, alloc_name,
+                   fst_name, snd_name);
+    cgen_emit_line(1, "%s res = malloc(sizeof(*res));", pair_name);
+    cgen_emit_line(1, "res->fst = fst;");
+    cgen_emit_line(1, "res->snd = snd;");
+    cgen_emit_line(1, "return res;");
+    cgen_emit_line(0, "}");
+  } break;
+  default:
+    __builtin_unreachable();
+  }
+}
+
+void cgen_emit_func_decl(struct function *function) {
+  fprintf(output_file, "%s %.*s(", cgen_get_type_name(function->return_type),
+          (int)function->name.len, function->name.name);
+  if (function->arguments_count == 0) {
+    fprintf(output_file, ");\n");
+    return;
+  }
+  for (uint32_t i = 0; i < function->arguments_count - 1; ++i) {
+    fprintf(output_file, "%s, ",
+            cgen_get_type_name(function->argument_types[i]));
+  }
+  fprintf(output_file, "%s);\n",
+          cgen_get_type_name(
+              function->argument_types[function->arguments_count - 1]));
+}
+
+void cgen_emit_func_decls() {
+  for (size_t i = 0; i < functions_count; ++i) {
+    cgen_emit_func_decl(functions + i);
+  }
+}
+
+void cgen_emit_assign_rhs(struct ast_node *rhs);
+
+void cgen_emit_array_literal(struct ast_node *rhs) {
+  struct type *type = types + rhs->tindex - TINDEX_CONSTRUCTOR_BASE;
+  const char *elem_type_name =
+      cgen_get_type_name(type_of_array_elem(rhs->tindex));
+  fprintf(output_file, "%s((%s[]){", type->c_alloc_name, elem_type_name);
+  struct ast_node *elem = ast_first_child(rhs);
+  int elems_count = 0;
+  while (elem != NULL) {
+    struct ast_node *next_elem = ast_next_child(elem);
+    elems_count++;
+    cgen_emit_assign_rhs(elem);
+    if (next_elem != NULL) {
+      fprintf(output_file, ", ");
+    }
+    elem = next_elem;
+  }
+  fprintf(output_file, "}, %d)", elems_count);
+}
+
+void cgen_emit_newpair(struct ast_node *rhs) {
+  struct type *type = types + rhs->tindex - TINDEX_CONSTRUCTOR_BASE;
+  fprintf(output_file, "%s(", type->c_alloc_name);
+  cgen_emit_assign_rhs(ast_first_child(rhs));
+  fprintf(output_file, ", ");
+  cgen_emit_assign_rhs(ast_nth_child(rhs, 1));
+  fprintf(output_file, ")");
+}
+
+void cgen_emit_call(struct ast_node *node) {
+  fprintf(output_file, "%.*s(", node->string_data_len, node->string_data);
+  struct ast_node *arg = ast_first_child(node);
+  while (arg != NULL) {
+    struct ast_node *next_arg = ast_next_child(arg);
+    cgen_emit_assign_rhs(arg);
+    if (next_arg != NULL) {
+      fprintf(output_file, ", ");
+    }
+    arg = next_arg;
+  };
+  fprintf(output_file, ")");
+}
+
+void cgen_emit_array_elem(struct ast_node *node) {
+  struct ast_node *ident = ast_first_child(node);
+  cgen_emit_assign_rhs(ident);
+  struct ast_node *elem = ast_next_child(ident);
+  while (elem != NULL) {
+    fprintf(output_file, "[");
+    cgen_emit_assign_rhs(elem);
+    fprintf(output_file, "]");
+    elem = ast_next_child(elem);
+  }
+}
+
+void cgen_emit_ident(struct ast_node *rhs) {
+  const char *str = rhs->string_data;
+  int len = rhs->string_data_len;
+#define CGEN_HANDLE_C_KEYWORD(_k)                                              \
+  else if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                   \
+    str = "$"_k;                                                               \
+    len = strlen(_k) + 1;                                                      \
+  }
+  if (false) {
+  }
+  CGEN_HANDLE_C_KEYWORD("continue")
+
+  fprintf(output_file, "%.*s", len, str);
+}
+
+void cgen_emit_assign_rhs(struct ast_node *rhs) {
+  switch (rhs->kind) {
+  case AST_NODE_IDENT:
+    cgen_emit_ident(rhs);
+    break;
+  case AST_NODE_INT_LITERAL:
+  case AST_NODE_STRING_LITERAL:
+  case AST_NODE_CHAR_LITERAL:
+  case AST_NODE_BOOL_LITERAL:
+    fprintf(output_file, "%.*s", rhs->string_data_len, rhs->string_data);
+    break;
+  case AST_NODE_NULL_LITERAL:
+    fprintf(output_file, "NULL");
+    break;
+  case AST_NODE_ARRAY_LITERAL:
+    cgen_emit_array_literal(rhs);
+    break;
+  case AST_NODE_RT_NEWPAIR:
+    cgen_emit_newpair(rhs);
+    break;
+  case AST_NODE_CALL:
+    cgen_emit_call(rhs);
+    break;
+  case AST_NODE_ARRAY_ELEM:
+    cgen_emit_array_elem(rhs);
+    break;
+  case AST_NODE_PAIR_ELEM:
+    fprintf(output_file, "(");
+    cgen_emit_assign_rhs(ast_first_child(rhs));
+    fprintf(output_file, ")->%s", rhs->token_id == TOK_FST ? "fst" : "snd");
+    break;
+  case AST_NODE_BINARY:
+    fprintf(output_file, "(");
+    cgen_emit_assign_rhs(ast_first_child(rhs));
+    fprintf(output_file, " %.*s ", rhs->string_data_len, rhs->string_data);
+    cgen_emit_assign_rhs(ast_nth_child(rhs, 1));
+    fprintf(output_file, ")");
+    break;
+  case AST_NODE_UNARY:
+    switch (rhs->token_id) {
+    case TOK_LEN:
+      fprintf(output_file, "$arrayLength(");
+      cgen_emit_assign_rhs(ast_first_child(rhs));
+      fprintf(output_file, ")");
+      break;
+    case TOK_EXCLAMATION_MARK:
+      fprintf(output_file, "!");
+      cgen_emit_assign_rhs(ast_first_child(rhs));
+      break;
+    case TOK_ORD:
+      fprintf(output_file, "(Int)");
+      cgen_emit_assign_rhs(ast_first_child(rhs));
+      break;
+    case TOK_CHR:
+      fprintf(output_file, "(Char)");
+      cgen_emit_assign_rhs(ast_first_child(rhs));
+      break;
+    }
+    break;
+  default:
+  }
+}
+
+void cgen_emit_read(int ident_level, struct ast_node *node) {
+  frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+  struct ast_node *loc = ast_first_child(node);
+  if (loc->tindex == TINDEX_INT) {
+    fprintf(output_file, "scanf(\"%%d\", &(");
+  } else {
+    fprintf(output_file, "scanf(\"%%c\", &(");
+  }
+  cgen_emit_assign_rhs(loc);
+  fprintf(output_file, "));\n");
+}
+
+void cgen_emit_decl(int ident_level, struct ast_node *decl) {
+  const char *type = cgen_get_type_name(type_from_ast(ast_first_child(decl)));
+  struct ast_node *ident = ast_nth_child(decl, 1);
+  frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+  fprintf(output_file, "%s ", type);
+  cgen_emit_ident(ident);
+  fprintf(output_file, " = ");
+  cgen_emit_assign_rhs(ast_nth_child(decl, 2));
+  fprintf(output_file, ";\n");
+}
+
+void cgen_emit_assignment(int ident_level, struct ast_node *decl) {
+  struct ast_node *lhs = ast_first_child(decl);
+  frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+  cgen_emit_assign_rhs(lhs);
+  fprintf(output_file, " = ");
+  cgen_emit_assign_rhs(ast_next_child(lhs));
+  fprintf(output_file, ";\n");
+}
+
+void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
+  struct ast_node *node = ast_first_child(rt_call);
+  frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+  switch (rt_call->token_id) {
+  case TOK_EXIT:
+    fputs("exit((", output_file);
+    cgen_emit_assign_rhs(ast_first_child(rt_call));
+    fprintf(output_file, ") %% 256);");
+    return;
+  case TOK_PRINT:
+  case TOK_PRINTLN:
+    fprintf(output_file, "printf(");
+    switch (node->tindex) {
+    case TINDEX_INT:
+      fprintf(output_file, "\"%%d");
+      break;
+    case TINDEX_STRING:
+      fprintf(output_file, "\"%%s");
+      break;
+    case TINDEX_BOOL:
+      // Converting boolean to string is handled later
+      fprintf(output_file, "\"%%s");
+      break;
+    case TINDEX_CHAR:
+      fprintf(output_file, "\"%%c");
+      break;
+    default:
+      break;
+    }
+    fprintf(output_file,
+            rt_call->token_id == TOK_PRINTLN ? "\\n\", (" : "\", (");
+    cgen_emit_assign_rhs(node);
+    if (node->tindex == TINDEX_BOOL) {
+      fprintf(output_file, ") ? \"true\" : \"false\");\n");
+    } else {
+      fprintf(output_file, "));\n");
+    }
+    break;
+  case TOK_FREE: {
+    struct type *type = types + node->tindex - TINDEX_CONSTRUCTOR_BASE;
+    fprintf(output_file, "%s(", type->c_free_name);
+    cgen_emit_assign_rhs(node);
+    fprintf(output_file, ");\n");
+    break;
+  }
+  default:
+    __builtin_unreachable();
+  }
+}
+
+void cgen_emit_scope(int ident_level, struct ast_node *scope) {
+  struct ast_node *stmt = ast_first_child(scope);
+  while (stmt != NULL) {
+    switch (stmt->kind) {
+    case AST_NODE_SCOPE:
+      cgen_emit_line(ident_level, "{");
+      cgen_emit_scope(ident_level + 1, stmt);
+      cgen_emit_line(ident_level, "}");
+      break;
+    case AST_NODE_IF:
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "if (");
+      cgen_emit_assign_rhs(ast_first_child(stmt));
+      fprintf(output_file, ") {\n");
+      cgen_emit_scope(ident_level + 1, ast_nth_child(stmt, 1));
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "} else {\n");
+      cgen_emit_scope(ident_level + 1, ast_nth_child(stmt, 2));
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "}\n");
+      break;
+    case AST_NODE_WHILE:
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "while (");
+      cgen_emit_assign_rhs(ast_first_child(stmt));
+      fprintf(output_file, ") {\n");
+      cgen_emit_scope(ident_level + 1, ast_nth_child(stmt, 1));
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "}\n");
+      break;
+    case AST_NODE_RETURN:
+      frepeat(output_file, CGEN_IDENT_SEQ, ident_level);
+      fprintf(output_file, "return ");
+      cgen_emit_assign_rhs(ast_first_child(stmt));
+      fprintf(output_file, ";\n");
+      cgen_emit_sep();
+      break;
+    case AST_NODE_DECL:
+      cgen_emit_decl(ident_level, stmt);
+      break;
+    case AST_NODE_ASSIGNMENT:
+      cgen_emit_assignment(ident_level, stmt);
+      break;
+    case AST_NODE_RT_READ:
+      cgen_emit_read(ident_level, stmt);
+      break;
+    case AST_NODE_RT_CALL:
+      cgen_emit_rt_call(ident_level, stmt);
+      break;
+    default:
+    }
+    stmt = ast_next_child(stmt);
+  }
+}
+
+void cgen_emit_func_def(struct ast_node *function) {
+  const char *return_type =
+      cgen_get_type_name(type_from_ast(ast_first_child(function)));
+  struct ast_node *ident = ast_nth_child(function, 1);
+  struct ast_node *param_list = ast_next_child(ident);
+  struct ast_node *scope = ast_next_child(param_list);
+
+  fprintf(output_file, "%s %.*s(", return_type, ident->string_data_len,
+          ident->string_data);
+
+  struct ast_node *param = ast_first_child(param_list);
+  while (param != NULL) {
+    struct ast_node *next_param = ast_next_child(param);
+    const char *param_type =
+        cgen_get_type_name(type_from_ast(ast_first_child(param)));
+    struct ast_node *ident = ast_nth_child(param, 1);
+    fprintf(output_file, "%s %.*s", param_type, ident->string_data_len,
+            ident->string_data);
+    if (next_param != NULL) {
+      fprintf(output_file, ", ");
+    }
+    param = next_param;
+  }
+  fprintf(output_file, ") {\n");
+  cgen_emit_scope(1, scope);
+  fprintf(output_file, "}\n");
+}
+
+void cgen_pass(struct ast_node *program) {
+  fputs(CGEN_PRELUDE, output_file);
+  cgen_emit_sep();
+
+  for (tindex_t i = 0; i < type_last_allocated_idx; ++i) {
+    cgen_emit_typedef(types + i);
+    cgen_emit_sep();
+  }
+
+  cgen_emit_func_decls();
+  cgen_emit_sep();
+
+  struct ast_node *node = ast_first_child(program);
+  while (node->kind == AST_NODE_FUNC) {
+    cgen_emit_func_def(node);
+    cgen_emit_sep();
+    node = ast_next_child(node);
+  }
+
+  fprintf(output_file, "int main() {\n");
+  cgen_emit_scope(1, node);
+  fprintf(output_file, "}\n");
 }
 
 int main(int argc, char const *argv[]) {
@@ -2236,11 +2672,17 @@ int main(int argc, char const *argv[]) {
     return EXIT_MISC_ERROR;
   }
 
-  const char *output_path = argv[2];
-  if (argc == 2) {
-    output_path = replace_wacc_extension(source_path);
+  if (argc == 3) {
+    output_file = fopen(argv[2], "w");
+    if (output_file == NULL) {
+      fprintf(stderr,
+              "error: can't open the output file \'%s\' for writing: %s \n",
+              argv[2], strerror(errno));
+      return EXIT_MISC_ERROR;
+    }
+  } else if (argc == 2) {
+    output_file = stdout;
   }
-  (void)output_path;
 
   mmap_source();
   mmap_ast_nodes();
@@ -2254,5 +2696,5 @@ int main(int argc, char const *argv[]) {
   sema_main_pass(ast);
 
   sema_assert_passed_checks();
-  // ast_dump(ast, 0);
+  cgen_pass(ast);
 }
