@@ -51,3 +51,70 @@ Script `run-on.sh` is provided for convinience. You can use it to run any `.wacc
 
 Run `make tests` to download tests from the specification repository. Run `make run-tests` to run all tests.
 
+### Debugging WACC programs
+
+You can debug WACC programs with `CGEN_LINE_CONTROL` environment variable. This environemnt variable instructs the compiler to emit line control directives. See `run-on-gdb.sh` script for how this can be used.
+
+```
+Breakpoint 1, main () at tests/valid/advanced/ticTacToe.wacc:1055
+1055
+(gdb) n
+1056            char playerSymbol = call chooseSymbol() ;
+(gdb) n
+========= Tic Tac Toe ================
+=  Because we know you want to win   =
+======================================
+=                                    =
+= Who would you like to be?          =
+=   x  (play first)                  =
+=   o  (play second)                 =
+=   q  (quit)                        =
+=                                    =
+======================================
+Which symbol you would like to choose: x
+You have chosen: x
+1057            char aiSymbol = call oppositeSymbol(playerSymbol) ;
+(gdb) n
+1058            char currentTurn = 'x' ;
+(gdb) n
+1060            pair(pair, pair) board = call allocateNewBoard() ;
+(gdb) n
+1062            println "Initialising AI. Please wait, this may take a few minutes." ;
+(gdb) n
+Initialising AI. Please wait, this may take a few minutes.
+1063            pair(pair, pair) aiData = call initAI(aiSymbol) ;
+(gdb) n
+1065            int turnCount = 0 ;
+(gdb) n
+1066            char winner = '\0' ;
+(gdb) n
+1068            bool _ = call printBoard(board) ;
+(gdb) n
+ 1 2 3
+1 | | 
+ -+-+-
+2 | | 
+ -+-+-
+3 | | 
+
+1070            while winner == '\0' && turnCount < 9 do
+(gdb) n
+1071                    int[] move = [0, 0] ;
+(gdb) n
+1072                    _ = call askForAMove(board, currentTurn, playerSymbol, aiData, move) ;
+(gdb) p winner
+$1 = 0 '\000'
+(gdb) p turnCount
+$2 = 0
+(gdb) p move
+$3 = (ArrayOfInt) 0x555568374e88
+```
+
+#### Function names
+
+Transpiler mangles C function names by prepending `$` to all of them. This means that you have to manually prepend `$` to all function names.
+
+```
+(gdb) b $askForAMove
+Breakpoint 2 at 0x555555556a4d: file tests/valid/advanced/ticTacToe.wacc, line 788.
+```
