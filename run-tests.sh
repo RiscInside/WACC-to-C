@@ -7,21 +7,40 @@ INVALID_SEM=$(find tests/invalid/semanticErr/ extensions-tests/invalid/semanticE
 FAILED=0
 PASSED=0
 
+echo "Running valid tests..."
+echo
+
 for test in $VALID
 do
-    ./transpiler-opt $test &> /dev/null
+    echo "Running transpiler on $test (./transpiler-opt $test $cFile)"
+    cFile=$(mktemp /tmp/XXXXXX.c)
+    binFile=$(mktemp /tmp/XXXXXX) 
+    ./transpiler-opt $test $cFile
     retVal=$?
     if [ $retVal -ne 0 ]; then
         echo Test $test fails
         FAILED=$((FAILED + 1))
     else
-        PASSED=$((PASSED + 1))
+        echo "Running gcc on $cFile (gcc -o $binFile $cFile)"
+        gcc -o $binFile $cFile
+        retVal=$?
+        if [ $retVal -ne 0 ]; then
+            echo Test $test fails on compilation
+            FAILED=$((FAILED + 1))
+        else
+            PASSED=$((PASSED + 1))
+        fi
     fi
 done
 
+echo "Running syntactically invalid tests..."
+echo
+
 for test in $INVALID_SYN
 do
-    ./transpiler-opt $test &> /dev/null
+    echo "Running transpiler on $test (./transpiler-opt $test)"
+    ./transpiler-opt $test
+    echo
     retVal=$?
     if [ $retVal -ne 100 ]; then
         echo "Test $test should have failed with error 100 (got $retVal)"
@@ -31,9 +50,14 @@ do
     fi
 done
 
+echo "Running semantically invalid tests..."
+echo
+
 for test in $INVALID_SEM
 do
-    ./transpiler-opt $test &> /dev/null
+    echo "Running transpiler on $test (./transpiler-opt $test)"
+    ./transpiler-opt $test
+    echo
     retVal=$?
     if [ $retVal -ne 200 ]; then
         echo "Test $test should have failed with code 200 (got $retVal)"
