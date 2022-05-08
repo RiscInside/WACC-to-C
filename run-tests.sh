@@ -2,7 +2,7 @@
 
 VALID=$(find tests/valid/ regressions/valid/ extensions-tests/valid -type f -name '*.wacc')
 INVALID_SYN=$(find tests/invalid/syntaxErr/ regressions/invalid/syntaxErr/ extensions-tests/invalid/syntaxErr/ -type f -name '*.wacc')
-INVALID_SEM=$(find tests/invalid/semanticErr/ extensions-tests/invalid/semanticErr/ -type f -name '*.wacc')
+INVALID_SEM=$(find tests/invalid/semanticErr/ regressions/invalid/semanticErr/ extensions-tests/invalid/semanticErr/ -type f -name '*.wacc')
 
 FAILED=0
 PASSED=0
@@ -40,8 +40,8 @@ for test in $INVALID_SYN
 do
     echo "Running transpiler on $test (./transpiler-opt $test)"
     ./transpiler-opt $test
-    echo
     retVal=$?
+    echo
     if [ $retVal -ne 100 ]; then
         echo "Test $test should have failed with error 100 (got $retVal)"
         FAILED=$((FAILED + 1))
@@ -57,8 +57,8 @@ for test in $INVALID_SEM
 do
     echo "Running transpiler on $test (./transpiler-opt $test)"
     ./transpiler-opt $test
-    echo
     retVal=$?
+    echo
     if [ $retVal -ne 200 ]; then
         echo "Test $test should have failed with code 200 (got $retVal)"
         FAILED=$((FAILED + 1))

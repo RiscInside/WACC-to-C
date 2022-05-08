@@ -1,0 +1,4 @@
+begin 
+    int[] foo = [1, 2, 3];
+    free foo
+end

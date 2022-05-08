@@ -1,0 +1,14 @@
+begin
+pair(pair, pair) lexer_new(pair(pair, pair) self , char[] source, int lenght) is
+ pair(pair, pair) __self = self; 
+ pair(char[], int) __fstself = fst __self;
+ char[] source = fst __fstself;
+   int current = snd __fstself; 
+   pair(int, int) __sndself = snd __self; 
+   int start = fst __sndself;
+    int lenght = snd __sndself;
+  exit 1
+end
+
+println "Hello"
+end

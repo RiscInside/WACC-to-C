@@ -2263,7 +2263,7 @@ void sema_visit_function(struct ast_node *node) {
   }
 
   struct ast_node *scope = ast_nth_child(node, 3);
-  sema_visit_scope(table, 1, scope, return_index);
+  sema_visit_scope(table, 0, scope, return_index);
 }
 
 void sema_main_pass(struct ast_node *program) {
@@ -2374,7 +2374,7 @@ void cgen_emit_typedef(struct type *type) {
     cgen_emit_sep();
 
     cgen_emit_line(0, "void %s(%s ptr) {", free_name, array_name);
-    cgen_emit_line(1, "free((unsigned int *)ptr - 1);");
+    cgen_emit_line(1, "free((unsigned long int *)ptr - 1);");
     cgen_emit_line(0, "}");
   } break;
   case TYPE_PAIR: {
