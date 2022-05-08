@@ -1289,7 +1289,7 @@ void mmap_ast_nodes() {
 void mmap_source() {
   int fd = open(source_path, O_RDONLY);
   if (fd < 0) {
-    fprintf(stderr, "error: failed to open the source file \'%s\': %s",
+    fprintf(stderr, "error: failed to open the source file \'%s\': %s\n",
             source_path, strerror(errno));
     exit(EXIT_MISC_ERROR);
   }
@@ -2710,7 +2710,7 @@ void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
       fprintf(output_file, "$printCharArray(");
       cgen_emit_assign_rhs(node);
       fprintf(output_file,
-              rt_call->token_id == TOK_PRINTLN ? ", true);" : ", false);\n");
+              rt_call->token_id == TOK_PRINTLN ? ", true);\n" : ", false);\n");
       return;
     }
     fprintf(output_file, "printf(");
@@ -2754,8 +2754,21 @@ void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
 }
 
 void cgen_emit_scope(int ident_level, struct ast_node *scope) {
+  static bool emit_line_numbers = false;
+  static bool emit_line_queried_env = false;
+
+  if (!emit_line_queried_env) {
+    emit_line_numbers = getenv("CGEN_LINE_CONTROL") != NULL;
+    emit_line_queried_env = true;
+  }
+
   struct ast_node *stmt = ast_first_child(scope);
   while (stmt != NULL) {
+    if (emit_line_numbers) {
+      struct pos stmt_pos;
+      to_pos(stmt->string_data - source, &stmt_pos);
+      fprintf(output_file, "#line %zu \"%s\"\n", stmt_pos.line, source_path);
+    }
     switch (stmt->kind) {
     case AST_NODE_SCOPE:
       cgen_emit_line(ident_level, "{");
