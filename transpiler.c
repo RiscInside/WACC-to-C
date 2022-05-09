@@ -24,11 +24,6 @@
 #define EXIT_SYNTAX_ERROR 100
 #define EXIT_MISC_ERROR -1
 
-const char *source_path;
-const char *source;
-size_t source_size;
-size_t source_pos = 0;
-
 // 1 TB
 #define ETERNAL_POOL_SIZE 1099511627776
 
@@ -49,19 +44,77 @@ void *alloc_eternal(size_t size, size_t align) {
   return res;
 }
 
+const char *source_path;
+const char *source;
+size_t source_size;
+size_t source_pos = 0;
+
+struct source {
+  const char *path;
+  const char *source;
+  size_t source_size;
+  size_t source_pos;
+};
+
+void source_save_global(struct source *buf) {
+  buf->path = source_path;
+  buf->source = source;
+  buf->source_size = source_size;
+  buf->source_pos = source_pos;
+}
+
+void mmap_source() {
+  int fd = open(source_path, O_RDONLY);
+  if (fd < 0) {
+    fprintf(stderr, "error: failed to open the source file \'%s\': %s\n",
+            source_path, strerror(errno));
+    exit(EXIT_MISC_ERROR);
+  }
+
+  struct stat source_stat;
+  if (fstat(fd, &source_stat) != 0) {
+    perror("internal error: failed to get source file size");
+    exit(EXIT_MISC_ERROR);
+  }
+  source_size = source_stat.st_size;
+
+  source =
+      mmap(NULL, source_size, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0);
+  if (source == MAP_FAILED) {
+    perror("internal error: failed to map the source file");
+    exit(EXIT_MISC_ERROR);
+  }
+}
+
+void push_source(const char *path, struct source *buf) {
+  source_save_global(buf);
+  source_path = path;
+  mmap_source();
+}
+
+void pop_source(struct source *buf) {
+  source_path = buf->path;
+  source = buf->source;
+  source_size = buf->source_size;
+  source_pos = buf->source_pos;
+}
+
 struct pos {
   size_t line;
   size_t column;
 };
 
-void to_pos(size_t raw, struct pos *buf) {
+void to_pos_in_source(const char *source, size_t raw, struct pos *buf) {
   static size_t newlines = 0;
   static size_t last_newline = 0;
   static size_t cur = 0;
-  if (cur > raw) {
+  static const char *last_source_ptr = NULL;
+
+  if (source != last_source_ptr || cur > raw) {
     cur = 0;
     newlines = 0;
     last_newline = 0;
+    last_source_ptr = source;
   }
 
   for (; cur < raw; ++cur) {
@@ -74,68 +127,75 @@ void to_pos(size_t raw, struct pos *buf) {
   buf->column = raw - last_newline;
 }
 
+void to_pos(size_t raw, struct pos *buf) {
+  return to_pos_in_source(source, raw, buf);
+}
+
+enum {
+  TOK_BEGIN,
+  TOK_END,
+  TOK_LPAREN,
+  TOK_RPAREN,
+  TOK_IS,
+  TOK_COMMA,
+  TOK_SEMICOLON,
+  TOK_SKIP,
+  TOK_ASSIGN,
+  TOK_PRINT,
+  TOK_PRINTLN,
+  TOK_READ,
+  TOK_FREE,
+  TOK_RETURN,
+  TOK_EXIT,
+  TOK_IF,
+  TOK_THEN,
+  TOK_ELSE,
+  TOK_FI,
+  TOK_WHILE,
+  TOK_DO,
+  TOK_DONE,
+  TOK_NEWPAIR,
+  TOK_CALL,
+  TOK_FST,
+  TOK_SND,
+  TOK_INT,
+  TOK_BOOL,
+  TOK_CHAR,
+  TOK_STRING,
+  TOK_LBRACKET,
+  TOK_RBRACKET,
+  TOK_PAIR,
+  TOK_EXCLAMATION_MARK,
+  TOK_DASH,
+  TOK_LEN,
+  TOK_ORD,
+  TOK_CHR,
+  TOK_ASTERIX,
+  TOK_SLASH,
+  TOK_PERCENT_SIGN,
+  TOK_PLUS_SIGN,
+  TOK_GT_SIGN,
+  TOK_GE_SIGN,
+  TOK_LT_SIGN,
+  TOK_LE_SIGN,
+  TOK_EQ_SIGN,
+  TOK_NE_SIGN,
+  TOK_AND,
+  TOK_OR,
+  TOK_IDENT,
+  TOK_INT_LITERAL,
+  TOK_BOOL_LITERAL,
+  TOK_CHAR_LITERAL,
+  TOK_STRING_LITERAL,
+  TOK_NULL,
+  TOK_EXTERN,
+  TOK_PUB
+};
+
 struct tok {
   const char *tok_start;
   int tok_size;
-  enum {
-    TOK_BEGIN,
-    TOK_END,
-    TOK_LPAREN,
-    TOK_RPAREN,
-    TOK_IS,
-    TOK_COMMA,
-    TOK_SEMICOLON,
-    TOK_SKIP,
-    TOK_ASSIGN,
-    TOK_PRINT,
-    TOK_PRINTLN,
-    TOK_READ,
-    TOK_FREE,
-    TOK_RETURN,
-    TOK_EXIT,
-    TOK_IF,
-    TOK_THEN,
-    TOK_ELSE,
-    TOK_FI,
-    TOK_WHILE,
-    TOK_DO,
-    TOK_DONE,
-    TOK_NEWPAIR,
-    TOK_CALL,
-    TOK_FST,
-    TOK_SND,
-    TOK_INT,
-    TOK_BOOL,
-    TOK_CHAR,
-    TOK_STRING,
-    TOK_LBRACKET,
-    TOK_RBRACKET,
-    TOK_PAIR,
-    TOK_EXCLAMATION_MARK,
-    TOK_DASH,
-    TOK_LEN,
-    TOK_ORD,
-    TOK_CHR,
-    TOK_ASTERIX,
-    TOK_SLASH,
-    TOK_PERCENT_SIGN,
-    TOK_PLUS_SIGN,
-    TOK_GT_SIGN,
-    TOK_GE_SIGN,
-    TOK_LT_SIGN,
-    TOK_LE_SIGN,
-    TOK_EQ_SIGN,
-    TOK_NE_SIGN,
-    TOK_AND,
-    TOK_OR,
-    TOK_IDENT,
-    TOK_INT_LITERAL,
-    TOK_BOOL_LITERAL,
-    TOK_CHAR_LITERAL,
-    TOK_STRING_LITERAL,
-    TOK_NULL,
-    TOK_EXTERN
-  } tok_kind;
+  uint16_t tok_kind;
 };
 
 void tok_skip_to_non_whitespace() {
@@ -361,6 +421,7 @@ bool tok_peek_kernel(struct tok *buf) {
         TOK_HANDLE_KEYWORD(TOK_PAIR, "pair")
         TOK_HANDLE_KEYWORD(TOK_PRINTLN, "println")
         TOK_HANDLE_KEYWORD(TOK_PRINT, "print")
+        TOK_HANDLE_KEYWORD(TOK_PUB, "pub")
         break;
       case 'r':
         TOK_HANDLE_KEYWORD(TOK_READ, "read")
@@ -465,45 +526,48 @@ typedef uint32_t tindex_t;
 
 #define TINDEX_INVALID ((tindex_t)-1)
 
+enum {
+  AST_NODE_PROGRAM,        // <no tag> function* statement
+  AST_NODE_FUNC,           // <no tag> type name param_list scope
+  AST_NODE_EXTERN,         // <no tag> type name param_list
+  AST_NODE_IDENT,          // <id string> [no children]
+  AST_NODE_PARAM_LIST,     // <no tag> param*
+  AST_NODE_PARAM,          // <no tag> type name
+  AST_NODE_DECL,           // <no tag> type name assign-rhs
+  AST_NODE_ASSIGNMENT,     // <no tag> assign-lhs assign-rhs
+  AST_NODE_SKIP,           // <skip>
+  AST_NODE_RETURN,         // <return> expr
+  AST_NODE_RT_CALL,        // <free|exit|print|println> expr
+  AST_NODE_RT_READ,        // <read> assign-lhs
+  AST_NODE_IF,             // <if> expr scope scope
+  AST_NODE_WHILE,          // <while> expr scope
+  AST_NODE_SCOPE,          // <no tag> stmt*
+  AST_NODE_ARRAY_ELEM,     // <no tag> ident expr* (subscripts)
+  AST_NODE_PAIR_ELEM,      // <fst|snd> expr
+  AST_NODE_ARRAY_LITERAL,  // <no tag> expr*
+  AST_NODE_RT_NEWPAIR,     // <no tag> expr expr
+  AST_NODE_CALL,           // <function name> expr*
+  AST_NODE_PRIMITIVE_TYPE, // <int|bool|char|string|pair>
+  AST_NODE_ARRAY,          // non-array type
+  AST_NODE_PAIR,           // <no tag> type type (not a pair in both cases)
+  AST_NODE_INT_LITERAL,    // <int literal> [no children]
+  AST_NODE_BOOL_LITERAL,   // <bool literal> [no children]
+  AST_NODE_CHAR_LITERAL,   // <char literal> [no children]
+  AST_NODE_STRING_LITERAL, // <string literal> [no children]
+  AST_NODE_NULL_LITERAL,   // <"null"> [no children]
+  AST_NODE_UNARY,          // <unary operator used> expr
+  AST_NODE_BINARY,         // <binary operator used> expr
+};
+
 struct ast_node {
   const char *source_ptr;
+  int source_offset;
   int source_len;
   int next_child;
   int first_child;
-  enum {
-    AST_NODE_PROGRAM,        // <no tag> function* statement
-    AST_NODE_FUNC,           // <no tag> type name param_list scope
-    AST_NODE_EXTERN,         // <no tag> type name param_list
-    AST_NODE_IDENT,          // <id string> [no children]
-    AST_NODE_PARAM_LIST,     // <no tag> param*
-    AST_NODE_PARAM,          // <no tag> type name
-    AST_NODE_DECL,           // <no tag> type name assign-rhs
-    AST_NODE_ASSIGNMENT,     // <no tag> assign-lhs assign-rhs
-    AST_NODE_SKIP,           // <skip>
-    AST_NODE_RETURN,         // <return> expr
-    AST_NODE_RT_CALL,        // <free|exit|print|println> expr
-    AST_NODE_RT_READ,        // <read> assign-lhs
-    AST_NODE_IF,             // <if> expr scope scope
-    AST_NODE_WHILE,          // <while> expr scope
-    AST_NODE_SCOPE,          // <no tag> stmt*
-    AST_NODE_ARRAY_ELEM,     // <no tag> ident expr* (subscripts)
-    AST_NODE_PAIR_ELEM,      // <fst|snd> expr
-    AST_NODE_ARRAY_LITERAL,  // <no tag> expr*
-    AST_NODE_RT_NEWPAIR,     // <no tag> expr expr
-    AST_NODE_CALL,           // <function name> expr*
-    AST_NODE_PRIMITIVE_TYPE, // <int|bool|char|string|pair>
-    AST_NODE_ARRAY,          // non-array type
-    AST_NODE_PAIR,           // <no tag> type type (not a pair in both cases)
-    AST_NODE_INT_LITERAL,    // <int literal> [no children]
-    AST_NODE_BOOL_LITERAL,   // <bool literal> [no children]
-    AST_NODE_CHAR_LITERAL,   // <char literal> [no children]
-    AST_NODE_STRING_LITERAL, // <string literal> [no children]
-    AST_NODE_NULL_LITERAL,   // <"null"> [no children]
-    AST_NODE_UNARY,          // <unary operator used> expr
-    AST_NODE_BINARY,         // <binary operator used> expr
-  } kind;
-  int token_id;    // set for operators
-  tindex_t tindex; // set for expressions
+  uint16_t kind;
+  uint16_t token_id; // set for operators
+  tindex_t tindex;   // set for expressions
 };
 
 #define AST_NODES_MAX 16777216
@@ -573,9 +637,10 @@ void ast_add_child(struct ast_node *cur, struct ast_node *child,
   *cur_child_r = child;
 }
 
-void ast_set_src_pos(struct ast_node *node, const char *tag, int tag_size) {
-  node->source_ptr = tag;
-  node->source_len = tag_size;
+void ast_set_src_pos(struct ast_node *node, const char *ptr, int len) {
+  node->source_ptr = ptr;
+  node->source_len = len;
+  node->source_offset = ptr - source;
 }
 
 struct ast_node *ast_alloc_node(int kind) {
@@ -601,6 +666,11 @@ struct ast_node *ast_alloc_node_tok(int kind, struct tok *tok) {
   res->source_ptr = tok->tok_start;
   res->source_len = tok->tok_size;
   return res;
+}
+
+void ast_to_pos(struct ast_node *node, struct pos *pos) {
+  to_pos_in_source(node->source_ptr - node->source_offset, node->source_offset,
+                   pos);
 }
 
 void frepeat(FILE *f, const char *str, int times) {
@@ -1285,33 +1355,10 @@ void mmap_ast_nodes() {
   }
 }
 
-void mmap_source() {
-  int fd = open(source_path, O_RDONLY);
-  if (fd < 0) {
-    fprintf(stderr, "error: failed to open the source file \'%s\': %s\n",
-            source_path, strerror(errno));
-    exit(EXIT_MISC_ERROR);
-  }
-
-  struct stat source_stat;
-  if (fstat(fd, &source_stat) != 0) {
-    perror("internal error: failed to get source file size");
-    exit(EXIT_MISC_ERROR);
-  }
-  source_size = source_stat.st_size;
-
-  source =
-      mmap(NULL, source_size, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0);
-  if (source == MAP_FAILED) {
-    perror("internal error: failed to map the source file");
-    exit(EXIT_MISC_ERROR);
-  }
-}
-
 void report_at_ast_node(struct ast_node *node, const char *severity,
                         const char *fmt, va_list args) {
   struct pos pos;
-  to_pos(node->source_ptr - source, &pos);
+  ast_to_pos(node, &pos);
 
   char buf[4096];
   vsnprintf(buf, 4096, fmt, args);
@@ -2765,7 +2812,7 @@ void cgen_emit_scope(int ident_level, struct ast_node *scope) {
   while (stmt != NULL) {
     if (emit_line_numbers) {
       struct pos stmt_pos;
-      to_pos(stmt->source_ptr - source, &stmt_pos);
+      ast_to_pos(stmt, &stmt_pos);
       fprintf(output_file, "#line %zu \"%s\"\n", stmt_pos.line, source_path);
     }
     switch (stmt->kind) {
@@ -2903,10 +2950,12 @@ int main(int argc, char const *argv[]) {
     output_file = stdout;
   }
 
-  mmap_source();
   mmap_ast_nodes();
   mmap_types();
   mmap_functions();
+
+  struct source unused;
+  push_source(source_path, &unused);
 
   struct ast_node *ast = parse_program();
   check_returns_pass(ast);
