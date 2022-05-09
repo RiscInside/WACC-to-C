@@ -2331,6 +2331,8 @@ bool verify_extension(const char *path) {
 
 FILE *output_file;
 
+const char *cgen_boehm_include;
+
 #define CGEN_IDENT_SEQ "\t"
 #define CGEN_PRELUDE                                                           \
   "typedef int Int;\n"                                                         \
@@ -2357,6 +2359,14 @@ FILE *output_file;
   "void $printCharArray(String arr, Bool newline) { int len = "                \
   "$arrayLength(arr); printf(newline ? \"%.*s\\n\" : \"%.*s\", len, arr); } "  \
   "\n"
+
+const char *cgen_malloc_name() {
+  return cgen_boehm_include == NULL ? "malloc" : "GC_malloc";
+}
+
+const char *cgen_free_name() {
+  return cgen_boehm_include == NULL ? "free" : "GC_free";
+}
 
 void cgen_emit_sep() { fputc('\n', output_file); }
 
@@ -2409,7 +2419,8 @@ void cgen_emit_typedef(struct type *type) {
                    "unsigned long int memory_needed = (unsigned long int)count "
                    "* sizeof(%s) + sizeof(unsigned long int);",
                    elem_name);
-    cgen_emit_line(1, "unsigned long int *res = malloc(memory_needed);");
+    cgen_emit_line(1, "unsigned long int *res = %s(memory_needed);",
+                   cgen_malloc_name());
     cgen_emit_line(1, "if (res == null) return null;");
     cgen_emit_line(1, "*res = (unsigned long int)count;");
     cgen_emit_line(
@@ -2420,7 +2431,7 @@ void cgen_emit_typedef(struct type *type) {
     cgen_emit_sep();
 
     cgen_emit_line(0, "void %s(%s ptr) {", free_name, array_name);
-    cgen_emit_line(1, "free((unsigned long int *)ptr - 1);");
+    cgen_emit_line(1, "%s((unsigned long int *)ptr - 1);", cgen_free_name());
     cgen_emit_line(0, "}");
   } break;
   case TYPE_PAIR: {
@@ -2429,10 +2440,9 @@ void cgen_emit_typedef(struct type *type) {
     const char *pair_name =
         dynamic_sprintf("PairOf%sAnd%s", fst_name, snd_name);
     const char *alloc_name = dynamic_sprintf("$alloc%s", pair_name);
-    const char *free_name = "free";
     type->c_name = pair_name;
     type->c_alloc_name = alloc_name;
-    type->c_free_name = free_name;
+    type->c_free_name = cgen_free_name();
 
     cgen_emit_line(0, "typedef struct {");
     cgen_emit_line(1, "%s fst;", fst_name);
@@ -2442,7 +2452,8 @@ void cgen_emit_typedef(struct type *type) {
 
     cgen_emit_line(0, "%s %s(%s fst, %s snd) {", pair_name, alloc_name,
                    fst_name, snd_name);
-    cgen_emit_line(1, "%s res = malloc(sizeof(*res));", pair_name);
+    cgen_emit_line(1, "%s res = %s(sizeof(*res));", pair_name,
+                   cgen_malloc_name());
     cgen_emit_line(1, "res->fst = fst;");
     cgen_emit_line(1, "res->snd = snd;");
     cgen_emit_line(1, "return res;");
@@ -2553,10 +2564,15 @@ void cgen_emit_ident(struct ast_node *rhs) {
   int len = rhs->source_len;
 #define CGEN_HANDLE_C_KEYWORD(_k)                                              \
   if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                        \
-    str = "$"_k;                                                               \
-    len = strlen(_k) + 1;                                                      \
-    goto emit;                                                                 \
+    fprintf(output_file, "$%.*s", len, str);                                   \
+    return;                                                                    \
   }
+
+  if (cgen_boehm_include != NULL && strncmp(str, "GC_", strlen("GC_")) == 0) {
+    fprintf(output_file, "$%.*s", len, str);
+    return;
+  }
+
   switch (str[0]) {
   case 'a':
     CGEN_HANDLE_C_KEYWORD("auto")
@@ -2640,7 +2656,6 @@ void cgen_emit_ident(struct ast_node *rhs) {
     break;
   default:
   }
-emit:
   fprintf(output_file, "%.*s", len, str);
 }
 
@@ -2896,6 +2911,11 @@ void cgen_emit_func_def(struct ast_node *function) {
 }
 
 void cgen_pass(struct ast_node *program) {
+  cgen_boehm_include = getenv("CGEN_BOEHM");
+  if (cgen_boehm_include != NULL) {
+    fprintf(output_file, "#include <gc.h>\n");
+  }
+
   fputs(CGEN_PRELUDE, output_file);
   cgen_emit_sep();
 
@@ -2918,9 +2938,12 @@ void cgen_pass(struct ast_node *program) {
     node = ast_next_child(node);
   }
 
-  fprintf(output_file, "int main() {\n");
+  cgen_emit_line(0, "int main() {\n");
+  if (cgen_boehm_include != NULL) {
+    cgen_emit_line(1, "GC_INIT();\n");
+  }
   cgen_emit_scope(1, node);
-  fprintf(output_file, "}\n");
+  cgen_emit_line(0, "}\n");
 }
 
 int main(int argc, char const *argv[]) {

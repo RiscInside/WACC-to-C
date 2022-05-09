@@ -14,15 +14,15 @@ for test in $VALID
 do
     echo "Running transpiler on $test (./transpiler-opt $test $cFile)"
     cFile=$(mktemp /tmp/XXXXXX.c)
-    binFile=$(mktemp /tmp/XXXXXX) 
+    binFile=$(mktemp /tmp/XXXXXX.o) 
     ./transpiler-opt $test $cFile
     retVal=$?
     if [ $retVal -ne 0 ]; then
         echo Test $test fails
         FAILED=$((FAILED + 1))
     else
-        echo "Running gcc on $cFile (gcc -o $binFile $cFile)"
-        gcc -o $binFile $cFile
+        echo "Running gcc on $cFile (gcc -c -o $binFile $cFile)"
+        gcc -c -o $binFile $cFile
         retVal=$?
         if [ $retVal -ne 0 ]; then
             echo Test $test fails on compilation

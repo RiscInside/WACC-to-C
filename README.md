@@ -9,6 +9,7 @@ WACC language is used for the compiler course at Imperial College London. Specif
 * Typechecking with error recovery (try running tests/invalid/semanticErr/multiple/*)
 * C code generation
 * `extern` extension which allows to call external functions
+* Boehm–Demers–Weiser garbage collector support
 
 ### `extern` extension
 
@@ -118,3 +119,11 @@ Transpiler mangles C function names by prepending `$` to all of them. This means
 (gdb) b $askForAMove
 Breakpoint 2 at 0x555555556a4d: file tests/valid/advanced/ticTacToe.wacc, line 788.
 ```
+
+### Boehm–Demers–Weiser garbage collector GC support
+
+Managing memory for all heap-allocated pairs is rather annoying. Thankfully, there is a way to make WACC a managed language.
+
+Setting `CGEN_BOEHM` environment variable makes the transpiler call into Boehm GC library for all `malloc()`/`free()` calls.
+
+Use `run-on-gc.sh` script to test programs with Boehm GC enabled.
