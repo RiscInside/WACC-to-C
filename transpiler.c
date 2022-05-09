@@ -466,8 +466,8 @@ typedef uint32_t tindex_t;
 #define TINDEX_INVALID ((tindex_t)-1)
 
 struct ast_node {
-  const char *string_data;
-  int string_data_len;
+  const char *source_ptr;
+  int source_len;
   int next_child;
   int first_child;
   enum {
@@ -573,9 +573,9 @@ void ast_add_child(struct ast_node *cur, struct ast_node *child,
   *cur_child_r = child;
 }
 
-void ast_set_tag(struct ast_node *node, const char *tag, int tag_size) {
-  node->string_data = tag;
-  node->string_data_len = tag_size;
+void ast_set_src_pos(struct ast_node *node, const char *tag, int tag_size) {
+  node->source_ptr = tag;
+  node->source_len = tag_size;
 }
 
 struct ast_node *ast_alloc_node(int kind) {
@@ -589,8 +589,8 @@ struct ast_node *ast_alloc_node(int kind) {
   res->kind = kind;
   res->first_child = -1;
   res->next_child = -1;
-  res->string_data = NULL;
-  res->string_data_len = 0;
+  res->source_ptr = NULL;
+  res->source_len = 0;
   res->token_id = -1;
   res->tindex = TINDEX_INVALID;
   return res;
@@ -598,8 +598,8 @@ struct ast_node *ast_alloc_node(int kind) {
 
 struct ast_node *ast_alloc_node_tok(int kind, struct tok *tok) {
   struct ast_node *res = ast_alloc_node(kind);
-  res->string_data = tok->tok_start;
-  res->string_data_len = tok->tok_size;
+  res->source_ptr = tok->tok_start;
+  res->source_len = tok->tok_size;
   return res;
 }
 
@@ -617,7 +617,7 @@ struct ast_node *parse_pair_type_component() {
   if (tok.tok_kind == TOK_PAIR) {
     tok_poll_token(&tok);
     struct ast_node *ptr = ast_alloc_node(AST_NODE_PRIMITIVE_TYPE);
-    ast_set_tag(ptr, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(ptr, tok.tok_start, tok.tok_size);
     ptr->token_id = tok.tok_kind;
     return ptr;
   }
@@ -636,7 +636,7 @@ struct ast_node *parse_non_array_type() {
   case TOK_STRING:
   case TOK_CHAR:
     res = ast_alloc_node_tok(AST_NODE_PRIMITIVE_TYPE, &tok);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     res->token_id = tok.tok_kind;
     break;
   case TOK_PAIR: {
@@ -650,7 +650,7 @@ struct ast_node *parse_non_array_type() {
     ast_add_child(res, parse_pair_type_component(), &last_child);
     tok_extract_of_type(&tok, TOK_RPAREN, "\')\'");
 
-    ast_set_tag(res, start, tok.tok_start + tok.tok_size - start);
+    ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
     break;
   }
   default:
@@ -670,8 +670,8 @@ struct ast_node *parse_type() {
     tok_poll_token(&tok);
     struct ast_node *arr = ast_alloc_node(AST_NODE_ARRAY);
     tok_extract_of_type(&tok, TOK_RBRACKET, "\']\'");
-    ast_set_tag(arr, res->string_data,
-                tok.tok_start + tok.tok_size - res->string_data);
+    ast_set_src_pos(arr, res->source_ptr,
+                    tok.tok_start + tok.tok_size - res->source_ptr);
     ast_add_first_child(arr, res);
     res = arr;
   }
@@ -682,7 +682,7 @@ struct ast_node *parse_ident() {
   struct tok tok;
   tok_extract_of_type(&tok, TOK_IDENT, "identifier");
   struct ast_node *res = ast_alloc_node(AST_NODE_IDENT);
-  ast_set_tag(res, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(res, tok.tok_start, tok.tok_size);
   return res;
 }
 
@@ -718,7 +718,7 @@ struct ast_node *parse_array_elem_or_ident() {
       return node;
     } else if (node == ident) {
       node = ast_alloc_node(AST_NODE_ARRAY_ELEM);
-      ast_set_tag(node, ident->string_data, ident->string_data_len);
+      ast_set_src_pos(node, ident->source_ptr, ident->source_len);
       ast_add_child(node, ident, &last_child);
     }
     tok_poll_token(&tok);
@@ -738,7 +738,7 @@ struct ast_node *parse_expr0() {
   case TOK_BOOL_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_BOOL_LITERAL);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_DASH:
   case TOK_PLUS_SIGN: {
@@ -752,9 +752,8 @@ struct ast_node *parse_expr0() {
         res = ast_alloc_node(AST_NODE_UNARY);
         res->token_id = tok.tok_kind;
         struct ast_node *child = parse_expr0();
-        ast_set_tag(res, tok.tok_start,
-                    child->string_data + child->string_data_len -
-                        tok.tok_start);
+        ast_set_src_pos(res, tok.tok_start,
+                        child->source_ptr + child->source_len - tok.tok_start);
         ast_add_first_child(res, child);
         break;
       }
@@ -768,9 +767,9 @@ struct ast_node *parse_expr0() {
     bool extend_integer_literal = prev == '-' || prev == '+';
     res = ast_alloc_node(AST_NODE_INT_LITERAL);
     if (extend_integer_literal) {
-      ast_set_tag(res, tok.tok_start - 1, tok.tok_size + 1);
+      ast_set_src_pos(res, tok.tok_start - 1, tok.tok_size + 1);
     } else {
-      ast_set_tag(res, tok.tok_start, tok.tok_size);
+      ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     }
     // should be safe, since after the token there could only be a null
     // character or some non-numeric character
@@ -789,17 +788,17 @@ struct ast_node *parse_expr0() {
   case TOK_CHAR_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_CHAR_LITERAL);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_STRING_LITERAL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_STRING_LITERAL);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_NULL:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_NULL_LITERAL);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_LPAREN:
     tok_poll_token(&tok);
@@ -817,8 +816,8 @@ struct ast_node *parse_expr0() {
     res = ast_alloc_node(AST_NODE_UNARY);
     res->token_id = tok.tok_kind;
     struct ast_node *child = parse_expr0();
-    ast_set_tag(res, tok.tok_start,
-                child->string_data + child->string_data_len - tok.tok_start);
+    ast_set_src_pos(res, tok.tok_start,
+                    child->source_ptr + child->source_len - tok.tok_start);
     ast_add_first_child(res, child);
   } break;
   default:
@@ -840,7 +839,7 @@ struct ast_node *parse_expr0() {
         tok_poll_token(&tok);                                                  \
         struct ast_node *rhs = _inner();                                       \
         struct ast_node *binop = ast_alloc_node(AST_NODE_BINARY);              \
-        ast_set_tag(binop, tok.tok_start, tok.tok_size);                       \
+        ast_set_src_pos(binop, tok.tok_start, tok.tok_size);                   \
         binop->token_id = tok.tok_kind;                                        \
         ast_add_first_child(binop, lhs);                                       \
         ast_add_next_child(lhs, rhs);                                          \
@@ -882,7 +881,7 @@ struct ast_node *parse_array_literal() {
   tok_peek_token_no_eof(&tok, "expression or \']\'");
   if (tok.tok_kind == TOK_RBRACKET) {
     tok_poll_token(&tok);
-    ast_set_tag(res, start, tok.tok_start + tok.tok_size - start);
+    ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
     return res;
   }
 
@@ -892,7 +891,7 @@ struct ast_node *parse_array_literal() {
     tok_peek_token_no_eof(&tok, "\',\' or \']\'");
     if (tok.tok_kind == TOK_RBRACKET) {
       tok_poll_token(&tok);
-      ast_set_tag(res, start, tok.tok_start + tok.tok_size - start);
+      ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
       return res;
     }
     tok_expect_token(TOK_COMMA, "\',\' or \']\'");
@@ -912,7 +911,7 @@ struct ast_node *parse_newpair() {
   tok_expect_token(TOK_COMMA, "\',\'");
   struct ast_node *right = parse_expr();
   tok_extract_of_type(&tok, TOK_RPAREN, "\')\'");
-  ast_set_tag(res, start, tok.tok_start + tok.tok_size - start);
+  ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
 
   ast_add_first_child(res, left);
   ast_add_next_child(left, right);
@@ -926,7 +925,7 @@ struct ast_node *parse_pair_elem() {
     tok_report_unexpected(&tok, "fst or snd");
   }
   struct ast_node *node = ast_alloc_node(AST_NODE_PAIR_ELEM);
-  ast_set_tag(node, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(node, tok.tok_start, tok.tok_size);
   ast_add_first_child(node, parse_expr());
   node->token_id = tok.tok_kind;
   return node;
@@ -940,7 +939,7 @@ struct ast_node *parse_call() {
 
   struct ast_node *node = ast_alloc_node(AST_NODE_CALL);
   struct ast_node *last_child = NULL;
-  ast_set_tag(node, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(node, tok.tok_start, tok.tok_size);
 
   tok_peek_token_no_eof(&tok, "\')\' or expression");
   if (tok.tok_kind == TOK_RPAREN) {
@@ -991,7 +990,7 @@ struct ast_node *parse_declaration_tail(struct ast_node *type,
                                         struct ast_node *ident) {
   tok_expect_token(TOK_ASSIGN, "\'=\'");
   struct ast_node *res = ast_alloc_node(AST_NODE_DECL);
-  ast_set_tag(res, type->string_data, type->string_data_len);
+  ast_set_src_pos(res, type->source_ptr, type->source_len);
   ast_add_first_child(res, type);
   ast_add_next_child(type, ident);
   ast_add_next_child(ident, parse_assign_rhs());
@@ -1017,7 +1016,7 @@ struct ast_node *parse_assignment() {
   struct ast_node *result = ast_alloc_node(AST_NODE_ASSIGNMENT);
 
   struct ast_node *lhs = parse_assign_lhs();
-  ast_set_tag(result, lhs->string_data, lhs->string_data_len);
+  ast_set_src_pos(result, lhs->source_ptr, lhs->source_len);
   tok_expect_token(TOK_ASSIGN, "\'=\'");
   struct ast_node *rhs = parse_assign_rhs();
   ast_add_first_child(result, lhs);
@@ -1031,7 +1030,7 @@ struct ast_node *parse_explicit_scope() {
   struct tok tok;
   tok_extract_of_type(&tok, TOK_BEGIN, "begin");
   struct ast_node *res = parse_scope(TOK_END, "\';\' or end");
-  ast_set_tag(res, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(res, tok.tok_start, tok.tok_size);
   tok_expect_token(TOK_END, "end");
   return res;
 }
@@ -1041,7 +1040,7 @@ struct ast_node *parse_if() {
 
   struct tok tok;
   tok_extract_of_type(&tok, TOK_IF, "if");
-  ast_set_tag(res, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(res, tok.tok_start, tok.tok_size);
 
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_THEN, "then");
@@ -1062,7 +1061,7 @@ struct ast_node *parse_while() {
 
   struct tok tok;
   tok_extract_of_type(&tok, TOK_WHILE, "while");
-  ast_set_tag(res, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(res, tok.tok_start, tok.tok_size);
 
   struct ast_node *cond = parse_expr();
   tok_expect_token(TOK_DO, "do");
@@ -1083,7 +1082,7 @@ struct ast_node *parse_statement_atom() {
   case TOK_SKIP:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_SKIP);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     break;
   case TOK_FREE:
   case TOK_EXIT:
@@ -1094,13 +1093,13 @@ struct ast_node *parse_statement_atom() {
     res = ast_alloc_node(tok.tok_kind == TOK_RETURN ? AST_NODE_RETURN
                                                     : AST_NODE_RT_CALL);
     res->token_id = tok.tok_kind;
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     ast_add_first_child(res, parse_expr());
     break;
   case TOK_READ:
     tok_poll_token(&tok);
     res = ast_alloc_node(AST_NODE_RT_READ);
-    ast_set_tag(res, tok.tok_start, tok.tok_size);
+    ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     ast_add_first_child(res, parse_assign_lhs());
     break;
   case TOK_IDENT:
@@ -1129,7 +1128,7 @@ struct ast_node *parse_statement_atom() {
 void parse_scope_in(struct ast_node *node, struct ast_node **last_child,
                     int term, const char *term_expected_string) {
   ast_add_child(node, parse_statement_atom(), last_child);
-  ast_set_tag(node, (*last_child)->string_data, (*last_child)->string_data_len);
+  ast_set_src_pos(node, (*last_child)->source_ptr, (*last_child)->source_len);
   while (true) {
     struct tok tok;
     if (!tok_peek_token(&tok) || (int)tok.tok_kind == term) {
@@ -1169,7 +1168,7 @@ struct ast_node *parse_parameter_list() {
   struct ast_node *last_child = NULL;
   struct tok tok;
   tok_extract_of_type(&tok, TOK_LPAREN, "\'(\'");
-  ast_set_tag(result, tok.tok_start, tok.tok_size);
+  ast_set_src_pos(result, tok.tok_start, tok.tok_size);
 
   tok_peek_token_no_eof(&tok, "\')\' or parameter definition");
   if (tok.tok_kind == TOK_RPAREN) {
@@ -1181,8 +1180,8 @@ struct ast_node *parse_parameter_list() {
     struct ast_node *type = parse_type();
     struct ast_node *name = parse_ident();
     struct ast_node *param = ast_alloc_node(AST_NODE_PARAM);
-    ast_set_tag(param, type->string_data,
-                name->string_data + name->string_data_len - name->string_data);
+    ast_set_src_pos(param, type->source_ptr,
+                    name->source_ptr + name->source_len - name->source_ptr);
     ast_add_first_child(param, type);
     ast_add_next_child(type, name);
     ast_add_child(result, param, &last_child);
@@ -1208,8 +1207,8 @@ struct ast_node *parse_extern() {
   struct ast_node *ident = parse_ident();
   struct ast_node *params = parse_parameter_list();
 
-  ast_set_tag(result, tok.tok_start,
-              params->string_data + params->string_data_len - tok.tok_start);
+  ast_set_src_pos(result, tok.tok_start,
+                  params->source_ptr + params->source_len - tok.tok_start);
   ast_add_first_child(result, return_type);
   ast_add_next_child(return_type, ident);
   ast_add_next_child(ident, params);
@@ -1220,7 +1219,7 @@ struct ast_node *parse_extern() {
 struct ast_node *parse_function_tail(struct ast_node *type,
                                      struct ast_node *ident) {
   struct ast_node *function = ast_alloc_node(AST_NODE_FUNC);
-  ast_set_tag(function, type->string_data, type->string_data_len);
+  ast_set_src_pos(function, type->source_ptr, type->source_len);
   struct ast_node *params = parse_parameter_list();
   tok_expect_token(TOK_IS, "is");
   struct ast_node *stmt = parse_scope(TOK_END, "\';\' or end");
@@ -1260,7 +1259,7 @@ struct ast_node *parse_program() {
   struct ast_node *statement = parse_scope(TOK_END, "\';\' or end");
   ast_add_child(res, statement, &cur_child);
   tok_extract_of_type(&tok, TOK_END, "end");
-  ast_set_tag(res, start, tok.tok_start + tok.tok_size - start);
+  ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
 
   size_t end_pos = source_pos;
   tok_skip_to_non_whitespace();
@@ -1312,7 +1311,7 @@ void mmap_source() {
 void report_at_ast_node(struct ast_node *node, const char *severity,
                         const char *fmt, va_list args) {
   struct pos pos;
-  to_pos(node->string_data - source, &pos);
+  to_pos(node->source_ptr - source, &pos);
 
   char buf[4096];
   vsnprintf(buf, 4096, fmt, args);
@@ -1664,8 +1663,8 @@ struct symbol *symbol_find(struct symbol *table, const char *str, size_t len,
 void symbol_init(struct symbol *symbol, struct symbol *table,
                  struct ast_node *ident, int scope_id, tindex_t index,
                  bool writable) {
-  symbol->str = ident->string_data;
-  symbol->len = ident->string_data_len;
+  symbol->str = ident->source_ptr;
+  symbol->len = ident->source_len;
   symbol->prev = table;
   symbol->hash = MurmurOAAT64(symbol->str, symbol->len);
   symbol->ident = ident;
@@ -1757,18 +1756,18 @@ void function_from_ast_node(struct ast_node *node) {
   struct ast_node *param_list = ast_next_child(name_node);
 
   struct function *func =
-      function_lookup(name_node->string_data, name_node->string_data_len);
+      function_lookup(name_node->source_ptr, name_node->source_len);
   if (func != NULL) {
     sema_report_error_at(node, "redeclaration of function \"%.*s\"",
-                         name_node->string_data_len, name_node->string_data);
+                         name_node->source_len, name_node->source_ptr);
     sema_show_note_at(func->node, "previously declared here");
     return;
   }
 
   func = function_alloc();
   func->return_type = type_from_ast(return_type_node);
-  func->name.name = name_node->string_data;
-  func->name.len = name_node->string_data_len;
+  func->name.name = name_node->source_ptr;
+  func->name.len = name_node->source_len;
   func->name.hash = MurmurOAAT64(func->name.name, func->name.len);
   func->arguments_count = ast_count_children(param_list);
   func->node = node;
@@ -1800,10 +1799,10 @@ void functions_pass(struct ast_node *program) {
 
 void sema_visit_ident(struct symbol *table, struct ast_node *ident) {
   struct symbol *sym =
-      symbol_find(table, ident->string_data, ident->string_data_len, -1);
+      symbol_find(table, ident->source_ptr, ident->source_len, -1);
   if (sym == NULL) {
-    sema_report_error_at(ident, "\'%.*s\' undeclared", ident->string_data_len,
-                         ident->string_data);
+    sema_report_error_at(ident, "\'%.*s\' undeclared", ident->source_len,
+                         ident->source_ptr);
     return;
   }
   ident->tindex = sym->tindex;
@@ -1875,7 +1874,7 @@ void sema_visit_binary_operator(struct symbol *table, struct ast_node *node) {
   }
   sema_report_error_at(node,
                        "invalid operands to binary '%.*s' (have '%s' and '%s')",
-                       node->string_data_len, node->string_data,
+                       node->source_len, node->source_ptr,
                        type_get_name(lhs->tindex), type_get_name(rhs->tindex));
 }
 
@@ -1922,7 +1921,7 @@ void sema_visit_unary_operator(struct symbol *table, struct ast_node *node) {
   }
 
   sema_report_error_at(node, "wrong type argument to unary '%.*s'",
-                       node->string_data_len, node->string_data,
+                       node->source_len, node->source_ptr,
                        type_get_name(inp->tindex));
 }
 
@@ -1955,10 +1954,10 @@ void sema_visit_array_elem(struct symbol *table, struct ast_node *node) {
 void sema_visit_call(struct symbol *table, struct ast_node *call) {
   (void)table;
   struct function *function =
-      function_lookup(call->string_data, call->string_data_len);
+      function_lookup(call->source_ptr, call->source_len);
   if (function == NULL) {
     sema_report_error_at(call, "use of undeclared function \"%.*s\"",
-                         call->string_data_len, call->string_data);
+                         call->source_len, call->source_ptr);
     return;
   }
   uint32_t args_count = 0;
@@ -2474,10 +2473,10 @@ void cgen_emit_newpair(struct ast_node *rhs) {
 
 void cgen_emit_call(struct ast_node *node) {
   struct function *function =
-      function_lookup(node->string_data, node->string_data_len);
+      function_lookup(node->source_ptr, node->source_len);
   bool external = function->node->kind == AST_NODE_EXTERN;
-  fprintf(output_file, external ? "%.*s(" : "$%.*s(", node->string_data_len,
-          node->string_data);
+  fprintf(output_file, external ? "%.*s(" : "$%.*s(", node->source_len,
+          node->source_ptr);
   struct ast_node *arg = ast_first_child(node);
   while (arg != NULL) {
     struct ast_node *next_arg = ast_next_child(arg);
@@ -2503,8 +2502,8 @@ void cgen_emit_array_elem(struct ast_node *node) {
 }
 
 void cgen_emit_ident(struct ast_node *rhs) {
-  const char *str = rhs->string_data;
-  int len = rhs->string_data_len;
+  const char *str = rhs->source_ptr;
+  int len = rhs->source_len;
 #define CGEN_HANDLE_C_KEYWORD(_k)                                              \
   if (len == strlen(_k) && memcmp(str, _k, len) == 0) {                        \
     str = "$"_k;                                                               \
@@ -2608,7 +2607,7 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
   case AST_NODE_CHAR_LITERAL:
   case AST_NODE_BOOL_LITERAL:
   case AST_NODE_NULL_LITERAL:
-    fprintf(output_file, "%.*s", rhs->string_data_len, rhs->string_data);
+    fprintf(output_file, "%.*s", rhs->source_len, rhs->source_ptr);
     break;
   case AST_NODE_ARRAY_LITERAL:
     cgen_emit_array_literal(rhs);
@@ -2630,7 +2629,7 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
   case AST_NODE_BINARY:
     fprintf(output_file, "(");
     cgen_emit_assign_rhs(ast_first_child(rhs));
-    fprintf(output_file, " %.*s ", rhs->string_data_len, rhs->string_data);
+    fprintf(output_file, " %.*s ", rhs->source_len, rhs->source_ptr);
     cgen_emit_assign_rhs(ast_nth_child(rhs, 1));
     fprintf(output_file, ")");
     break;
@@ -2766,7 +2765,7 @@ void cgen_emit_scope(int ident_level, struct ast_node *scope) {
   while (stmt != NULL) {
     if (emit_line_numbers) {
       struct pos stmt_pos;
-      to_pos(stmt->string_data - source, &stmt_pos);
+      to_pos(stmt->source_ptr - source, &stmt_pos);
       fprintf(output_file, "#line %zu \"%s\"\n", stmt_pos.line, source_path);
     }
     switch (stmt->kind) {
@@ -2828,8 +2827,8 @@ void cgen_emit_func_def(struct ast_node *function) {
   struct ast_node *param_list = ast_next_child(ident);
   struct ast_node *scope = ast_next_child(param_list);
 
-  fprintf(output_file, "%s $%.*s(", return_type, ident->string_data_len,
-          ident->string_data);
+  fprintf(output_file, "%s $%.*s(", return_type, ident->source_len,
+          ident->source_ptr);
 
   struct ast_node *param = ast_first_child(param_list);
   while (param != NULL) {
