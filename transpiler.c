@@ -681,22 +681,34 @@ void frepeat(FILE *f, const char *str, int times) {
 
 struct ast_node *parse_type();
 
-struct ast_node *parse_pair_type_component() {
+struct ast_node *parse_pair() {
   struct tok tok;
-  tok_peek_token_no_eof(&tok, "pair type component");
-  if (tok.tok_kind == TOK_PAIR) {
-    tok_poll_token(&tok);
-    struct ast_node *ptr = ast_alloc_node(AST_NODE_PRIMITIVE_TYPE);
-    ast_set_src_pos(ptr, tok.tok_start, tok.tok_size);
-    ptr->token_id = tok.tok_kind;
-    return ptr;
+  tok_extract_of_type(&tok, TOK_PAIR, "pair");
+  const char *start = tok.tok_start;
+  int size = tok.tok_size;
+  // opaque pair
+  if (!tok_peek_token(&tok) || tok.tok_kind != TOK_LPAREN) {
+    struct ast_node *res = ast_alloc_node(AST_NODE_PRIMITIVE_TYPE);
+    ast_set_src_pos(res, start, size);
+    res->token_id = TOK_PAIR;
+    return res;
   }
-  return parse_type();
+  // normal pair
+  struct ast_node *res = ast_alloc_node(AST_NODE_PAIR);
+  tok_expect_token(TOK_LPAREN, "\'(\'");
+  struct ast_node *first = parse_type();
+  tok_expect_token(TOK_COMMA, "\',\'");
+  struct ast_node *second = parse_type();
+  tok_extract_of_type(&tok, TOK_RPAREN, "\')\'");
+  ast_add_first_child(res, first);
+  ast_add_next_child(first, second);
+  ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
+  return res;
 }
 
 struct ast_node *parse_non_array_type() {
   struct tok tok;
-  tok_poll_token_no_eof(&tok, "type");
+  tok_peek_token_no_eof(&tok, "type");
 
   struct ast_node *res;
 
@@ -705,24 +717,14 @@ struct ast_node *parse_non_array_type() {
   case TOK_BOOL:
   case TOK_STRING:
   case TOK_CHAR:
+    tok_poll_token(&tok);
     res = ast_alloc_node_tok(AST_NODE_PRIMITIVE_TYPE, &tok);
     ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     res->token_id = tok.tok_kind;
     break;
-  case TOK_PAIR: {
-    res = ast_alloc_node(AST_NODE_PAIR);
-    const char *start = tok.tok_start;
-    struct ast_node *last_child = NULL;
-
-    tok_expect_token(TOK_LPAREN, "\'(\'");
-    ast_add_child(res, parse_pair_type_component(), &last_child);
-    tok_expect_token(TOK_COMMA, "\',\'");
-    ast_add_child(res, parse_pair_type_component(), &last_child);
-    tok_extract_of_type(&tok, TOK_RPAREN, "\')\'");
-
-    ast_set_src_pos(res, start, tok.tok_start + tok.tok_size - start);
+  case TOK_PAIR:
+    res = parse_pair();
     break;
-  }
   default:
     tok_report_unexpected(&tok, "type");
   }

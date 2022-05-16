@@ -9,6 +9,7 @@ WACC language is used for the compiler course at Imperial College London. Specif
 * Typechecking with error recovery (try running tests/invalid/semanticErr/multiple/*)
 * C code generation
 * `extern` extension which allows to call external functions
+* Pairs extensions
 * Boehm–Demers–Weiser garbage collector support
 
 ### `extern` extension
@@ -35,6 +36,10 @@ begin
     done
 end
 ```
+
+### Pairs extension
+
+Pair types have been extended so that they are a bit less clumsy. `pair` (aka opaque pair type) is now a valid type on its own. Additionally, non-opaque pairs can be nested to preserve type information.
 
 ### Building
 

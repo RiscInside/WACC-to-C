@@ -1,0 +1,64 @@
+begin
+    pair cdr(pair list) is
+        if list == null then
+            return null
+        else
+            pair(pair, pair) unpacked = list;
+            pair second = snd unpacked;
+            return second
+        fi
+    end
+
+    pair car(pair list) is
+        if list == null then
+            return null
+        else
+            pair(pair, pair) unpacked = list;
+            pair first = fst unpacked;
+            return first
+        fi
+    end
+
+    pair cons(pair list1, pair list2) is
+        pair(pair, pair) res = newpair(list1, list2);
+        return res
+    end
+
+    pair(int, pair) singleton_int(int val) is
+        pair(int, pair) res = newpair(val, null);
+        return res
+    end
+
+    pair int_array_to_list(int[] arr) is
+        int i = len arr - 1;
+        pair res = null;
+        while i >= 0 do
+            pair boxed = call singleton_int(arr[i]);
+            res = call cons(boxed, res);
+            i = i - 1
+        done;
+        return res
+    end
+
+    bool print_list(pair list) is
+        print "[";
+        pair cur_list = list;
+        while cur_list != null do
+            pair(int, pair) car = call car(cur_list);
+            pair cdr = call cdr(cur_list);
+            int unboxed = fst car;
+            print unboxed;
+            if cdr != null then
+                print ", "
+            else skip fi;
+            cur_list = cdr
+        done;
+        print "]";
+        return false
+    end
+
+    int[] test_arr = [1, 2, 3, 4, 5];
+    pair list = call int_array_to_list(test_arr);
+    bool _ = call print_list(list);
+    println ""
+end

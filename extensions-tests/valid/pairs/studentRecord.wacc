@@ -1,0 +1,24 @@
+begin
+    pair(pair(string, string), int) makeStudent(string name, string surname, int age) is
+        pair(string, string) fullName = newpair(name, surname);
+        pair(pair(string, string), int) result = newpair(fullName, age);
+        return result
+    end
+
+    bool printStudent(pair(pair(string, string), int) record) is
+        pair(string, string) fullName = fst record;
+        string firstName = fst fullName;
+        string secondName = snd fullName;
+        int age = snd record;
+        print firstName;
+        print " ";
+        print secondName;
+        print ", age ";
+        print age;
+        return true
+    end
+
+    pair(pair(string, string), int) student = call makeStudent("John", "Smith", 14);
+    bool _ = call printStudent(student);
+    println ""
+end

@@ -1,0 +1,12 @@
+begin
+        pair(int,int) a = newpair(1,2);
+        pair(int,int) b = newpair(3,4);
+        pair(int,int)[] a0 = [a];
+        pair(int,int)[] b0 = [b];
+        pair(pair(int,int)[], pair(int,int)[]) int_4 = newpair(a0, b0);
+        free(int_4);
+        free(a0);
+        free(b0);
+        free(a);
+        free(b)
+end
