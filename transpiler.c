@@ -1919,7 +1919,7 @@ void sema_visit_binary_operator(struct symbol *table, struct ast_node *node) {
       node->tindex = TINDEX_BOOL;
       return;
     }
-    return;
+    break;
   }
   sema_report_error_at(node,
                        "invalid operands to binary '%.*s' (have '%s' and '%s')",

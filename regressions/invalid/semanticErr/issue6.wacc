@@ -1,0 +1,7 @@
+begin 
+    bool bad(char[][] m, char e) is
+        return m[0]==e
+    end
+
+    skip
+end
