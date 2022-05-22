@@ -878,7 +878,7 @@ struct ast_node *parse_expr0() {
     tok_expect_token(TOK_RPAREN, "\')\'");
     break;
   case TOK_IDENT:
-    res = parse_array_elem_or_ident(TOK_IDENT);
+    res = parse_array_elem_or_ident();
     break;
   case TOK_EXCLAMATION_MARK:
   case TOK_LEN:
@@ -1515,7 +1515,7 @@ struct type *type_find_key(tkey_t key) {
   struct type *node = types + idx;
   node->key = key;
   node->name = NULL;
-  node->name = TYPE_UNINIT;
+  node->kind = TYPE_UNINIT;
   if (tsearch(node, &types_tree, types_compare_keys) == NULL) {
     fprintf(stderr, "internal error: failed to construct type\n");
     exit(EXIT_MISC_ERROR);
@@ -2657,6 +2657,7 @@ void cgen_emit_ident(struct ast_node *rhs) {
     CGEN_HANDLE_C_KEYWORD("_Thread_local")
     break;
   default:
+    break;
   }
   fprintf(output_file, "%.*s", len, str);
 }
@@ -2723,6 +2724,7 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
     }
     break;
   default:
+    break;
   }
 }
 
@@ -2879,6 +2881,7 @@ void cgen_emit_scope(int ident_level, struct ast_node *scope) {
       cgen_emit_rt_call(ident_level, stmt);
       break;
     default:
+      break;
     }
     stmt = ast_next_child(stmt);
   }
