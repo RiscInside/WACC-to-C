@@ -2794,11 +2794,14 @@ void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
       fprintf(output_file, "\"%%c");
       break;
     default:
-      fprintf(output_file, "\"%%r");
+      fprintf(output_file, "\"0x%%lx");
       break;
     }
     fprintf(output_file,
             rt_call->token_id == TOK_PRINTLN ? "\\n\", (" : "\", (");
+    if (node->tindex >= TINDEX_CONSTRUCTOR_BASE) {
+      fprintf(output_file, "(unsigned long int)");
+    }
     cgen_emit_assign_rhs(node);
     if (node->tindex == TINDEX_BOOL) {
       fprintf(output_file, ") ? \"true\" : \"false\");\n");
