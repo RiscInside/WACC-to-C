@@ -1589,6 +1589,14 @@ tindex_t type_make_array(tindex_t inp) {
   return type - types + TINDEX_CONSTRUCTOR_BASE;
 }
 
+tindex_t type_make_char_array() {
+  static tindex_t res = TINDEX_INVALID;
+  if (res == TINDEX_INVALID) {
+    res = type_make_array(TINDEX_CHAR);
+  }
+  return res;
+}
+
 tindex_t type_make_pair(tindex_t left, tindex_t right) {
   tkey_t key = type_pair_compute_id(left, right);
   struct type *type = type_find_key(key);
@@ -1637,7 +1645,8 @@ bool type_pair_strict_subtype_of(tindex_t lhs, tindex_t rhs) {
 
 bool type_substitutable_for(tindex_t lhs, tindex_t rhs) {
   return lhs == rhs || lhs == TINDEX_INVALID || rhs == TINDEX_INVALID ||
-         type_pair_strict_subtype_of(lhs, rhs);
+         type_pair_strict_subtype_of(lhs, rhs) ||
+         (lhs == type_make_char_array() && rhs == TINDEX_STRING);
 }
 
 bool types_eq_valid(tindex_t lhs, tindex_t rhs) {
@@ -2417,10 +2426,20 @@ void cgen_emit_typedef(struct type *type) {
 
     cgen_emit_line(0, "%s %s(%s *elems, int count) {", array_name, alloc_name,
                    elem_name);
-    cgen_emit_line(1,
-                   "unsigned long int memory_needed = (unsigned long int)count "
-                   "* sizeof(%s) + sizeof(unsigned long int);",
-                   elem_name);
+    if (type->args[0] == TINDEX_CHAR) {
+      // +1 for the null terminator
+      cgen_emit_line(
+          1,
+          "unsigned long int memory_needed = ((unsigned long int)count + 1) "
+          "* sizeof(%s) + sizeof(unsigned long int);",
+          elem_name);
+    } else {
+      cgen_emit_line(
+          1,
+          "unsigned long int memory_needed = (unsigned long int)count "
+          "* sizeof(%s) + sizeof(unsigned long int);",
+          elem_name);
+    }
     cgen_emit_line(1, "unsigned long int *res = %s(memory_needed);",
                    cgen_malloc_name());
     cgen_emit_line(1, "if (res == null) return null;");
@@ -2428,6 +2447,10 @@ void cgen_emit_typedef(struct type *type) {
     cgen_emit_line(
         1, "memcpy(res + 1, elems, (unsigned long int)count * sizeof(%s));",
         elem_name);
+    if (type->args[0] == TINDEX_CHAR) {
+      // add null terminator in
+      cgen_emit_line(1, "((char *)(res + 1))[count] = \'\\0\';", elem_name);
+    }
     cgen_emit_line(1, "return (%s)(res + 1);", array_name);
     cgen_emit_line(0, "}");
     cgen_emit_sep();
@@ -2771,7 +2794,7 @@ void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
     return;
   case TOK_PRINT:
   case TOK_PRINTLN:
-    if (node->tindex == type_make_array(TINDEX_CHAR)) {
+    if (node->tindex == type_make_char_array()) {
       fprintf(output_file, "$printCharArray(");
       cgen_emit_assign_rhs(node);
       fprintf(output_file,

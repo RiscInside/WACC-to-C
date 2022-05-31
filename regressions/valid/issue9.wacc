@@ -1,0 +1,10 @@
+begin
+
+skip;
+
+char[] b = ['c', 'h', 'a', 'r', '[', ']'];
+string a = b;
+println a;
+
+skip
+end
