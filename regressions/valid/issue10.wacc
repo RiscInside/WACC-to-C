@@ -1,0 +1,19 @@
+begin
+skip;
+
+
+pair(pair, pair)[] a = [null, null, null, null];
+
+println len a;
+
+println -len a;
+println --len(a);
+println !(len a == 3);
+println !(len a != 4);
+
+println chr 39;
+println ord 'a';
+
+println chr ord chr ord chr 40;
+
+skip end

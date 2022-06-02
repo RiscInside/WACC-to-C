@@ -2729,20 +2729,24 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
       fprintf(output_file, ")");
       break;
     case TOK_EXCLAMATION_MARK:
-      fprintf(output_file, "!");
+      fprintf(output_file, "!(");
       cgen_emit_assign_rhs(ast_first_child(rhs));
+      fprintf(output_file, ")");
       break;
     case TOK_ORD:
-      fprintf(output_file, "(Int)");
+      fprintf(output_file, "(Int)(");
       cgen_emit_assign_rhs(ast_first_child(rhs));
+      fprintf(output_file, ")");
       break;
     case TOK_CHR:
-      fprintf(output_file, "(Char)");
+      fprintf(output_file, "(Char)(");
       cgen_emit_assign_rhs(ast_first_child(rhs));
+      fprintf(output_file, ")");
       break;
     case TOK_DASH:
-      fprintf(output_file, "-");
+      fprintf(output_file, "-(");
       cgen_emit_assign_rhs(ast_first_child(rhs));
+      fprintf(output_file, ")");
       break;
     }
     break;
