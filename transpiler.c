@@ -2821,7 +2821,7 @@ void cgen_emit_rt_call(int ident_level, struct ast_node *rt_call) {
       fprintf(output_file, "\"%%c");
       break;
     default:
-      fprintf(output_file, "\"0x%%lx");
+      fprintf(output_file, "\"%%p");
       break;
     }
     fprintf(output_file,
