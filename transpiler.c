@@ -806,6 +806,7 @@ struct ast_node *parse_expr0() {
   struct ast_node *res;
   tok_peek_token_no_eof(&tok, "primary expression");
 
+  bool extend_integer_literal = false;
   switch (tok.tok_kind) {
   case TOK_BOOL_LITERAL:
     tok_poll_token(&tok);
@@ -829,25 +830,24 @@ struct ast_node *parse_expr0() {
         ast_add_first_child(res, child);
         break;
       }
+    } else {
+      extend_integer_literal = true;
     }
   }
   // fallthrough
   case TOK_INT_LITERAL: {
     tok_poll_token(&tok);
-    char prev = tok.tok_start == source ? '\0' : *(tok.tok_start - 1);
-    bool negate_integer_literal = prev == '-';
-    bool extend_integer_literal = prev == '-' || prev == '+';
     res = ast_alloc_node(AST_NODE_INT_LITERAL);
     if (extend_integer_literal) {
       ast_set_src_pos(res, tok.tok_start - 1, tok.tok_size + 1);
+      extend_integer_literal = false;
     } else {
       ast_set_src_pos(res, tok.tok_start, tok.tok_size);
     }
     // should be safe, since after the token there could only be a null
     // character or some non-numeric character
-    long value = strtol(tok.tok_start, NULL, 10);
-    if (value > ((long)INT_MAX + 1) ||
-        (value > INT_MAX && !negate_integer_literal)) {
+    long value = strtol(res->source_ptr, NULL, 10);
+    if (value > INT_MAX || value < INT_MIN) {
       struct pos pos;
       to_pos(tok.tok_start - source, &pos);
       fprintf(stderr,
