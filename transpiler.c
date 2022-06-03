@@ -2690,7 +2690,17 @@ void cgen_emit_assign_rhs(struct ast_node *rhs) {
   case AST_NODE_IDENT:
     cgen_emit_ident(rhs);
     break;
-  case AST_NODE_INT_LITERAL:
+  case AST_NODE_INT_LITERAL: {
+    const char *start = rhs->source_ptr;
+    const char *end = start + rhs->source_len;
+    start += strspn(start, "0");
+    if (end > start) {
+      fprintf(output_file, "%.*s", (int)(end - start), start);
+    } else {
+      assert(end == start);
+      fprintf(output_file, "0");
+    }
+  } break;
   case AST_NODE_STRING_LITERAL:
   case AST_NODE_CHAR_LITERAL:
   case AST_NODE_BOOL_LITERAL:
