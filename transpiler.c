@@ -188,8 +188,7 @@ enum {
   TOK_CHAR_LITERAL,
   TOK_STRING_LITERAL,
   TOK_NULL,
-  TOK_EXTERN,
-  TOK_PUB
+  TOK_EXTERN
 };
 
 struct tok {
@@ -429,7 +428,6 @@ bool tok_peek_kernel(struct tok *buf) {
         TOK_HANDLE_KEYWORD(TOK_PAIR, "pair")
         TOK_HANDLE_KEYWORD(TOK_PRINTLN, "println")
         TOK_HANDLE_KEYWORD(TOK_PRINT, "print")
-        TOK_HANDLE_KEYWORD(TOK_PUB, "pub")
         break;
       case 'r':
         TOK_HANDLE_KEYWORD(TOK_READ, "read")
