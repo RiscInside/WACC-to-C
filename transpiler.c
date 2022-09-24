@@ -329,6 +329,14 @@ bool tok_peek_kernel(struct tok *buf) {
                 source_path, pos.line, pos.column, first_char);
         exit(EXIT_SYNTAX_ERROR);
       }
+      if (source[source_pos + length - 1] != '\'') {
+        struct pos pos;
+        to_pos(source_pos, &pos);
+        fprintf(stderr,
+                "error at %s:%zu:%zu: multicharacter character constant",
+                source_path, pos.line, pos.column);
+        exit(EXIT_SYNTAX_ERROR);
+      }
       tok_fill(buf, TOK_CHAR_LITERAL, length);
       return true;
     } else if (TOK_MATCHES(">=")) {
