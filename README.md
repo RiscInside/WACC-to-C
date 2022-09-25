@@ -2,7 +2,7 @@
 
 WACC-to-C is a transpiler from WACC programming language to GNU C. Possible applications include debugging WACC programs and using it to bootstrap a self-hosting WACC compiler.
 
-WACC language is used for the compiler course at Imperial College London. Specification and examples are available at https://gitlab.doc.ic.ac.uk/rd3918/wacc_examples
+WACC language is used for the compiler course at Imperial College London. Specification and examples are available at https://gitlab.doc.ic.ac.uk/lab2122_spring/wacc_examples/-/raw/master/WACCLangSpec.pdf?inline=false
 
 ### Features
 * Semi-complete parser and semantic analysis engine (all tests passing)
